@@ -1,5 +1,11 @@
 # tradeflow
 
+[![ci](https://github.com/josegalarza/tradeflow/actions/workflows/ci.yml/badge.svg)](https://github.com/josegalarza/tradeflow/actions/workflows/ci.yml)
+[![pages](https://github.com/josegalarza/tradeflow/actions/workflows/pages.yml/badge.svg)](https://github.com/josegalarza/tradeflow/actions/workflows/pages.yml)
+[![dashboard](https://img.shields.io/badge/dashboard-live-2a78d6)](https://josegalarza.github.io/tradeflow/)
+[![dbt docs](https://img.shields.io/badge/dbt%20docs-lineage-eb6834)](https://josegalarza.github.io/tradeflow/dbt-docs/)
+[![licence](https://img.shields.io/badge/licence-MIT-lightgrey)](LICENSE)
+
 **A local-first analytics engineering platform for a synthetic retail brokerage.**
 dbt · DuckDB · Dagster · Dash — dimensional modelling, a tag-driven data
 classification and masking framework, quarantine-based data quality, CI/CD and

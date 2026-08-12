@@ -1,0 +1,34 @@
+# Without this the build context is over a gigabyte -- .venv alone is ~1 GB, and
+# a generated landing zone can be several more. Docker sends the whole context to
+# the daemon before it runs a single instruction, so an image that should build in
+# two minutes instead spends twenty transferring files it will never use. The
+# container generates its own data at run time.
+
+.venv/
+venv/
+data/
+*.duckdb
+*.duckdb.wal
+
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+warehouse/target/
+warehouse/dbt_packages/
+warehouse/logs/
+logs/
+
+dashboard/static_export/
+site/
+docs/
+*.md
+!README.md
+
+orchestration/.dagster_home/
+.DS_Store
+.env
