@@ -4,7 +4,10 @@
 > dbt manifest and `governance/policy.yml`. Run `make governance` to
 > refresh. Do not edit by hand.
 
-Generated 2026-08-12 16:30 UTC
+No generation timestamp is embedded on purpose. This file is committed,
+so a timestamp would make every `make governance` run dirty a clean tree
+and every diff noise. A diff here now means a classification actually
+changed; git history records when.
 
 This catalog is produced from the same classification tags that generate
 the masked role views in `warehouse/models/40_secure/`. It therefore

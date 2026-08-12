@@ -15,6 +15,21 @@ PIP         := $(VENV)/bin/pip
 DBT         := $(VENV)/bin/dbt
 WAREHOUSE   := warehouse
 
+# Interpreter used to CREATE the venv. This needs to be found rather than
+# assumed: the project requires Python >= 3.11 (numpy 2.3 and the dbt pins), and
+# a machine's bare `python3` is frequently older -- a pyenv global, a distro
+# default. Using it produced a fresh-clone failure whose only symptom was
+# "No matching distribution found for numpy~=2.3.0", which says nothing about
+# the actual cause.
+#
+# Picks the newest supported interpreter available. Override explicitly with:
+#   make install PYTHON_BIN=/opt/homebrew/bin/python3.12
+PYTHON_BIN ?= $(shell for p in python3.13 python3.12 python3.11 python3; do \
+	  if command -v $$p >/dev/null 2>&1 && \
+	     $$p -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' \
+	     >/dev/null 2>&1; then echo $$p; break; fi; \
+	done)
+
 # Absolute path to the landing zone. The staging models are views over these
 # files and DuckDB resolves relative paths against whichever process opens the
 # database -- so a relative path here makes the warehouse readable from
@@ -44,9 +59,21 @@ help: ## Show this help
 # Setup
 # ---------------------------------------------------------------------------- #
 
+define require_python
+	@if [ -z "$(PYTHON_BIN)" ]; then \
+	  echo "error: no Python >= 3.11 found on PATH."; \
+	  echo "  This project needs 3.11 or newer (numpy 2.3, dbt 1.11)."; \
+	  echo "  Install one, or point at it directly:"; \
+	  echo "    make install PYTHON_BIN=/path/to/python3.12"; \
+	  exit 1; \
+	fi
+	@echo "using $(PYTHON_BIN) ($$($(PYTHON_BIN) --version 2>&1))"
+endef
+
 .PHONY: install
 install: ## Create the venv and install everything
-	python3 -m venv $(VENV)
+	$(call require_python)
+	$(PYTHON_BIN) -m venv $(VENV)
 	$(PIP) install --quiet --upgrade pip
 	$(PIP) install --quiet -r requirements/dev.txt
 	$(PIP) install --quiet -r requirements/orchestration.txt
@@ -56,7 +83,8 @@ install: ## Create the venv and install everything
 
 .PHONY: install-core
 install-core: ## Install only what `make build` needs (used by CI)
-	python3 -m venv $(VENV)
+	$(call require_python)
+	$(PYTHON_BIN) -m venv $(VENV)
 	$(PIP) install --quiet --upgrade pip
 	$(PIP) install --quiet -r requirements/dev.txt
 	cd $(WAREHOUSE) && ../$(DBT) deps

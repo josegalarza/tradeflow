@@ -11,6 +11,10 @@ dbt · DuckDB · Dagster · Dash — dimensional modelling, a tag-driven data
 classification and masking framework, quarantine-based data quality, CI/CD and
 Slack alerting.
 
+**Requires:** Python 3.11 or newer, and nothing else. `make install` finds a
+suitable interpreter itself; point it at one with
+`make install PYTHON_BIN=/path/to/python3.12` if it cannot.
+
 ```bash
 git clone https://github.com/josegalarza/tradeflow && cd tradeflow
 make install

@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -67,7 +66,6 @@ def role_visibility(policy: Policy, column, models_role_scope: bool) -> str:
 
 
 def render(policy: Policy, models: list[Model]) -> str:
-    generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     lines: list[str] = []
 
     counts: Counter[str] = Counter()
@@ -96,7 +94,10 @@ def render(policy: Policy, models: list[Model]) -> str:
         "> dbt manifest and `governance/policy.yml`. Run `make governance` to",
         "> refresh. Do not edit by hand.",
         "",
-        f"Generated {generated_at}",
+        "No generation timestamp is embedded on purpose. This file is committed,",
+        "so a timestamp would make every `make governance` run dirty a clean tree",
+        "and every diff noise. A diff here now means a classification actually",
+        "changed; git history records when.",
         "",
         "This catalog is produced from the same classification tags that generate",
         "the masked role views in `warehouse/models/40_secure/`. It therefore",
