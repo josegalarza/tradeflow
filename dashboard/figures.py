@@ -32,9 +32,16 @@ from dashboard.theme import (
 )
 
 
-def _empty(message: str) -> go.Figure:
+def _empty(message: str, title: str = "No data") -> go.Figure:
+    """An empty-state chart that keeps its title.
+
+    The title is passed in rather than replaced by "No data" because a section of
+    the published dashboard reading "No data" three times tells a reader nothing
+    about what is missing. An empty chart still has a subject, and on a clean run
+    several of these are *supposed* to be empty -- the message says which and why.
+    """
     figure = go.Figure()
-    figure.update_layout(**base_layout("No data"))
+    figure.update_layout(**base_layout(title))
     figure.add_annotation(
         text=message, showarrow=False, font=dict(color=INK_MUTED, size=13)
     )
@@ -57,7 +64,7 @@ def equity_composition() -> go.Figure:
     """
     frame = data.equity_curve()
     if frame.empty:
-        return _empty("No account snapshots yet.")
+        return _empty("No account snapshots yet.", "Platform equity")
 
     figure = go.Figure()
     for index, (column, label) in enumerate([("cash", "Cash"), ("holdings", "Holdings")]):
@@ -107,7 +114,7 @@ def daily_orders_and_fills() -> go.Figure:
     """
     frame = data.daily_activity()
     if frame.empty:
-        return _empty("No trading activity yet.")
+        return _empty("No trading activity yet.", "Daily activity")
 
     figure = go.Figure()
     for index, (column, label) in enumerate(
@@ -142,7 +149,7 @@ def notional_by_channel() -> go.Figure:
     """
     frame = data.notional_by_channel()
     if frame.empty:
-        return _empty("No executions yet.")
+        return _empty("No executions yet.", "Traded value by channel")
 
     pivot = frame.pivot_table(
         index="channel", columns="asset_class", values="notional", aggfunc="sum"
@@ -185,7 +192,7 @@ def orders_by_hour() -> go.Figure:
     """
     frame = data.orders_by_hour()
     if frame.empty:
-        return _empty("No orders yet.")
+        return _empty("No orders yet.", "Orders by hour of day")
 
     pivot = frame.pivot_table(
         index="placed_hour", columns="order_status", values="orders", aggfunc="sum"
@@ -225,7 +232,7 @@ def cohort_equity() -> go.Figure:
     """Equity by signup cohort and tier. Stacked bar: composition per cohort."""
     frame = data.customer_cohorts()
     if frame.empty:
-        return _empty("No customers yet.")
+        return _empty("No customers yet.", "Equity by signup cohort")
 
     frame["signup_month"] = pd.to_datetime(frame["signup_month"]).dt.strftime("%Y-%m")
     pivot = frame.pivot_table(
@@ -270,7 +277,7 @@ def customer_value_scatter() -> go.Figure:
     """
     frame = data.customer_value_distribution()
     if frame.empty:
-        return _empty("No trading customers yet.")
+        return _empty("No trading customers yet.", "Customer value")
 
     figure = go.Figure()
     for index, rating in enumerate(["low", "medium", "high"]):
@@ -328,7 +335,7 @@ def top_instruments() -> go.Figure:
     """
     frame = data.top_instruments(15)
     if frame.empty:
-        return _empty("No executions yet.")
+        return _empty("No executions yet.", "Most-traded instruments")
 
     frame = frame.sort_values("notional")
     figure = go.Figure(
@@ -371,7 +378,7 @@ def sector_exposure() -> go.Figure:
     """
     frame = data.sector_exposure()
     if frame.empty:
-        return _empty("No open positions yet.")
+        return _empty("No open positions yet.", "Sector exposure")
 
     frame = frame.sort_values("market_value")
     figure = go.Figure(
@@ -418,9 +425,12 @@ def rejects_by_reason() -> go.Figure:
     """
     frame = data.quality_by_reason()
     if frame.empty:
+        # Empty on a clean run, which is the correct answer and worth saying out
+        # loud on the published dashboard rather than leaving a blank panel.
         return _empty(
-            "No rows quarantined. Run `make demo-anomalies` to plant defects "
-            "and see this populate."
+            "Nothing quarantined -- this run was clean.<br>"
+            "Run <b>make demo-anomalies</b> to plant defects and watch this fill.",
+            "Quarantined rows by reason",
         )
 
     frame = frame.sort_values("rows")
@@ -462,7 +472,7 @@ def reject_rate_over_time() -> go.Figure:
     """
     frame = data.quality_over_time()
     if frame.empty:
-        return _empty("No screened rows yet.")
+        return _empty("No screened rows yet.", "Reject rate")
 
     figure = go.Figure()
     for index, model_name in enumerate(sorted(frame["model_name"].unique())):
@@ -511,7 +521,9 @@ def stale_price_share() -> go.Figure:
     """
     frame = data.stale_price_share()
     if frame.empty:
-        return _empty("No position snapshots yet.")
+        return _empty(
+            "No position snapshots yet.", "Positions priced from an earlier session"
+        )
 
     figure = go.Figure(
         go.Scatter(
@@ -548,7 +560,7 @@ def classification_distribution() -> go.Figure:
     """
     frame = data.classification_summary()
     if frame.empty:
-        return _empty("No classified columns found.")
+        return _empty("No classified columns found.", "Columns by classification")
 
     figure = go.Figure(
         go.Bar(

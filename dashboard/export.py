@@ -65,12 +65,29 @@ def _tile(label: str, value: str, note: str) -> str:
       </div>"""
 
 
-def _table(frame, max_rows: int = 120) -> str:
+def _table(frame, title: str, note: str, max_rows: int = 120) -> str:
+    """A labelled table.
+
+    Titled and captioned rather than bare, because these tables are also the
+    *relief* the palette's contrast check obliges: two of its categorical slots
+    sit below 3:1 on the light surface, and the remedy is that the same numbers
+    are readable as text. An unlabelled table does not discharge that.
+    """
+    heading = (
+        f'<div class="table-title">{title}</div><div class="table-note">{note}</div>'
+    )
     if frame.empty:
-        return "<p class='muted'>Nothing to show.</p>"
-    return frame.head(max_rows).to_html(
+        return f"{heading}<p class='muted'>Nothing to show for this run.</p>"
+    body = frame.head(max_rows).to_html(
         index=False, border=0, classes="data-table", escape=False
     )
+    footer = (
+        f'<div class="table-note">Showing {min(len(frame), max_rows):,} '
+        f"of {len(frame):,} rows.</div>"
+        if len(frame) > max_rows
+        else ""
+    )
+    return heading + body + footer
 
 
 def render() -> str:
@@ -126,10 +143,38 @@ def render() -> str:
 
     sections = [
         ("Overview", rendered[0:4], None),
-        ("Customers", rendered[4:6], _table(data.customer_cohorts().head(40))),
+        (
+            "Customers",
+            rendered[4:6],
+            _table(
+                data.customer_cohorts(),
+                "Signup cohorts",
+                "The same figures as the chart above, for anyone who would rather "
+                "read them.",
+            ),
+        ),
         ("Instruments", rendered[6:8], None),
-        ("Data quality", rendered[8:11], None),
-        ("Governance", rendered[11:12], _table(data.pii_register())),
+        (
+            "Data quality",
+            rendered[8:11],
+            _table(
+                data.quality_by_reason(),
+                "Quarantine detail",
+                "Every reject reason and its row count. Empty on a clean run.",
+            ),
+        ),
+        (
+            "Governance",
+            rendered[11:12],
+            _table(
+                data.pii_register(),
+                "PII register",
+                "Every column carrying personal data, and how each role sees it. "
+                "'clear' means unmasked; 'withheld' means the column is absent "
+                "from that role's view entirely. Generated from the dbt tags.",
+                max_rows=200,
+            ),
+        ),
     ]
 
     body = []
@@ -184,6 +229,8 @@ def render() -> str:
   .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 12px; }}
   .card {{ background: var(--surface); border: 1px solid var(--grid); border-radius: 10px; padding: 14px; overflow: hidden; }}
   .table-card {{ margin-top: 12px; max-height: 520px; overflow: auto; }}
+  .table-title {{ font-size: 15px; font-weight: 600; color: var(--ink); }}
+  .table-note {{ font-size: 12px; color: var(--muted); margin-bottom: 10px; }}
   table.data-table {{ width: 100%; border-collapse: collapse; font-size: 12px; color: var(--ink-2); }}
   table.data-table th {{ text-align: left; font-weight: 600; color: var(--muted);
     font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
