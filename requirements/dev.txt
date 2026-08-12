@@ -1,0 +1,9 @@
+-r base.txt
+
+# Linting, formatting and unit testing.
+pytest~=8.4
+pytest-cov~=6.2
+ruff~=0.14
+sqlfluff~=3.4
+sqlfluff-templater-dbt~=3.4
+pre-commit~=4.2

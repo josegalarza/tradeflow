@@ -1,0 +1,57 @@
+[project]
+name = "tradeflow"
+version = "0.1.0"
+description = "Local-first analytics engineering platform for a synthetic retail brokerage."
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+extend-exclude = ["warehouse/dbt_packages", "warehouse/target", ".venv"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle
+  "F",    # pyflakes
+  "I",    # import sorting
+  "UP",   # pyupgrade
+  "B",    # bugbear
+  "C4",   # comprehensions
+  "SIM",  # simplify
+  "RET",  # returns
+  "PTH",  # prefer pathlib
+  "RUF",
+]
+ignore = [
+  # Long lines are allowed in docstrings and comments where the alternative is
+  # breaking a URL or a table row. Code lines are still held to line-length.
+  "E501",
+  # `raise ... from` inside CLI error handling adds noise without adding
+  # information for the reader of a one-line error message.
+  "B904",
+  # C408 wants {} over dict(). Plotly's entire API is keyword configuration --
+  # `dict(width=2, color=SURFACE)` reads as a set of named options, and
+  # `{"width": 2, "color": SURFACE}` reads as data. Following the rule here would
+  # make the chart code measurably harder to scan for no correctness gain.
+  "C408",
+  # Same reason: generator-to-dict conversions in the governance tools read more
+  # clearly as explicit comprehensions over the policy structures.
+  "C401",
+  "C402",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on private helpers deliberately, and fixture shadowing is the
+# pytest idiom.
+"tests/*" = ["F811", "SIM117"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+  # dagster-dbt emits beta warnings on import that say nothing about this project.
+  "ignore::UserWarning:dagster.*",
+]

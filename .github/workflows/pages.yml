@@ -1,0 +1,83 @@
+name: pages
+
+# Publishes two artefacts a reviewer can look at without cloning anything:
+#
+#   /            the static dashboard -- live, interactive Plotly charts
+#   /dbt-docs/   the dbt documentation site, with the full lineage graph
+#
+# This is what makes the project legible to someone who has three minutes and no
+# intention of running a Python project.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DBT_PROFILES_DIR: ${{ github.workspace }}/warehouse
+      TRADEFLOW_LANDING_PATH: ${{ github.workspace }}/data/landing
+      TRADEFLOW_DUCKDB: ${{ github.workspace }}/data/tradeflow.duckdb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements/dev.txt
+          python -m pip install --quiet -r requirements/dashboard.txt
+          cd warehouse && dbt deps
+
+      # `small` rather than `tiny`: the published charts should have enough shape
+      # to be worth looking at, and 430k rows still builds in well under a minute.
+      - name: Build the warehouse
+        run: |
+          python -m ingestion.generate --scale small --seed 42
+          cd warehouse && dbt build
+
+      - name: Governance artefacts
+        run: |
+          cd warehouse && dbt docs generate --no-compile
+          cd "$GITHUB_WORKSPACE"
+          python -m governance.build_catalog
+
+      - name: Render the static dashboard
+        run: python -m dashboard.export --out site/index.html
+
+      - name: Add the dbt docs site
+        run: |
+          mkdir -p site/dbt-docs
+          cp warehouse/target/index.html site/dbt-docs/
+          cp warehouse/target/manifest.json site/dbt-docs/
+          cp warehouse/target/catalog.json site/dbt-docs/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

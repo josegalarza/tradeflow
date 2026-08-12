@@ -1,0 +1,772 @@
+version: 2
+
+# ---------------------------------------------------------------------------- #
+# Every column below carries a `classification`, and most carry a `masking`
+# strategy. These tags are the single source of truth for the governance layer:
+#
+#   * governance/check_classification.py fails the build if any non-technical
+#     column is missing a classification, so the framework cannot silently rot
+#     as the warehouse grows;
+#   * governance/generate_secure_views.py reads them from the dbt manifest and
+#     emits the 40_secure role views;
+#   * governance/build_catalog.py renders them into docs/catalog.md.
+#
+# Columns whose name begins with `_` are warehouse technical metadata and are
+# classified `internal` automatically by the checker -- the rule is stated in
+# governance/policy.yml rather than repeated 40 times here.
+#
+# classification: public | internal | confidential | restricted
+# masking:        none | hash | partial | redact | tokenize | generalize
+#
+# ---------------------------------------------------------------------------- #
+# DETECTORS vs GATES
+#
+# Some tests here are deliberately `severity: warn`. That is not laziness -- it
+# is the difference between a test that detects a defect the pipeline already
+# handles and a gate that must stop the build.
+#
+# A staging test at error severity halts every downstream model. When the defect
+# in question is one the quarantine layer is built to absorb -- an orphan foreign
+# key, a duplicated fill, a negative quantity -- an error-severity test means the
+# quarantine never runs, the marts never build, and the dashboard goes dark
+# because 0.15% of orders were malformed. That is a worse outcome than the
+# defect: the pipeline should degrade, not stop.
+#
+# So those tests warn, loudly, and are counted in agg_data_quality. The gate
+# lives at the other end, in tests/assert_reject_rate_within_threshold.sql: an
+# occasional bad row is operational noise, and a *rate* of bad rows is an
+# incident. Invariants that can never be legitimately violated -- the accounting
+# identity, mart grain uniqueness, FX resolution -- stay at error severity.
+# ---------------------------------------------------------------------------- #
+
+models:
+  # ========================================================================== #
+  # Reference
+  # ========================================================================== #
+  - name: stg_instruments
+    description: >
+      One row per tradeable instrument. Conformed dimension source -- the same
+      instrument key is used by orders, executions, prices and positions.
+    meta:
+      layer: "10_staging"
+      grain: "one row per instrument_id"
+      owner: "data-platform"
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "dividend_yield >= 0"
+    columns:
+      - name: instrument_id
+        description: Primary key. Surrogate key from the source system.
+        data_tests: [not_null, unique]
+        meta: { classification: public }
+      - name: symbol
+        description: Exchange ticker, e.g. AAPL or CBA.AX.
+        data_tests: [not_null, unique]
+        meta: { classification: public }
+      - name: instrument_name
+        description: Full legal name of the security.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: asset_class
+        description: equity, etf or crypto. Governs trading calendar and fees.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["equity", "etf", "crypto"]
+        meta: { classification: public }
+      - name: exchange
+        description: Listing venue code.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: sector
+        description: GICS-style sector, or a thematic label for funds.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: listing_currency
+        description: Currency the instrument is quoted in.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["USD", "AUD", "EUR", "GBP"]
+        meta: { classification: public }
+      - name: dividend_yield
+        description: Annual dividend yield as a decimal fraction.
+        meta: { classification: public }
+      - name: is_active
+        description: False for delisted instruments that still carry history.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: listed_date
+        description: Date the instrument became tradeable on the platform.
+        meta: { classification: public }
+
+  - name: stg_market_prices
+    description: >
+      Daily OHLCV per instrument. Equity rows exist only on trading days;
+      crypto trades every calendar day. Simulated, not market data.
+    meta:
+      layer: "10_staging"
+      grain: "one row per instrument_id per price_date"
+      owner: "data-platform"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [instrument_id, price_date]
+      # The OHLC band has to contain its own open and close, or every
+      # execution-price check downstream is measuring noise.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "close_price BETWEEN low_price AND high_price"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "open_price BETWEEN low_price AND high_price"
+    columns:
+      - name: instrument_id
+        description: Foreign key to stg_instruments.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_instruments')
+                field: instrument_id
+        meta: { classification: public }
+      - name: symbol
+        description: Denormalised ticker, carried for query convenience.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: price_date
+        description: Trading session date.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: open_price
+        description: First traded price of the session.
+        meta: { classification: public }
+      - name: high_price
+        description: Highest traded price of the session.
+        meta: { classification: public }
+      - name: low_price
+        description: Lowest traded price of the session.
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+        meta: { classification: public }
+      - name: close_price
+        description: Last traded price of the session. The mark-to-market price.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: previous_close_price
+        description: Close of the prior session, for return calculations.
+        meta: { classification: public }
+      - name: volume
+        description: Shares or units traded during the session.
+        meta: { classification: public }
+      - name: price_currency
+        description: Currency the price is quoted in.
+        data_tests: [not_null]
+        meta: { classification: public }
+
+  - name: stg_fx_rates
+    description: >
+      Daily rate per currency pair against the reporting currency, including
+      the USD -> USD identity row. Quoted every calendar day so a fill can
+      always be converted without gap-filling.
+    meta:
+      layer: "10_staging"
+      grain: "one row per base_currency, quote_currency, rate_date"
+      owner: "data-platform"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [base_currency, quote_currency, rate_date]
+    columns:
+      - name: base_currency
+        description: Currency being converted from.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: quote_currency
+        description: Currency being converted to. Always USD in this warehouse.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: rate_date
+        description: Date the rate applies to.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: rate
+        description: Units of quote currency per one unit of base currency.
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+        meta: { classification: public }
+
+  # ========================================================================== #
+  # Party -- the PII surface. Read this block alongside governance/policy.yml.
+  # ========================================================================== #
+  - name: stg_customer_extracts
+    description: >
+      Month-end extracts of the mutable customer record: one row per customer
+      per extract date, holding that customer's state as at that date. Source
+      for dim_customer's SCD2 history.
+
+      The most heavily classified model in the warehouse. Nothing is masked
+      here by design -- see the model's header comment.
+    meta:
+      layer: "10_staging"
+      grain: "one row per customer_id per extract_date"
+      owner: "data-platform"
+      contains_pii: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [customer_id, extract_date]
+      # A customer cannot appear in an extract taken before they existed.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "CAST(created_at AS DATE) <= extract_date"
+    columns:
+      - name: customer_id
+        description: Primary key of the customer, stable across extracts.
+        data_tests: [not_null]
+        meta:
+          classification: internal
+          pii: true
+          pii_type: pseudonymous_id
+          masking: none
+      - name: extract_date
+        description: Date this snapshot of the customer record was taken.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: first_name
+        description: Given name.
+        data_tests: [not_null]
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: last_name
+        description: Family name.
+        data_tests: [not_null]
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: full_name
+        description: Concatenation of given and family name, for display.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: email
+        description: Primary contact email, lowercased and trimmed.
+        data_tests:
+          # Detector, not a gate: a missing email is a defect in the CRM extract,
+          # not a reason to stop reporting on trading activity.
+          - not_null:
+              config:
+                severity: warn
+          - dbt_expectations.expect_column_values_to_match_regex:
+              arguments:
+                regex: "^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$"
+              config:
+                severity: warn
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: email
+          # Hashed rather than redacted: analysts need to count distinct
+          # customers and join across systems, which a hash preserves and a
+          # redaction destroys.
+          masking: hash
+      - name: phone_number
+        description: Contact number in E.164-ish format with country prefix.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: phone
+          masking: partial
+      - name: date_of_birth
+        description: Date of birth. Drives suitability and age-bracket analysis.
+        data_tests: [not_null]
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: date_of_birth
+          # Generalised to a birth-year band: keeps the demographic signal,
+          # removes the identifier. A full DOB plus a postcode is close to a
+          # unique key for a person.
+          masking: generalize
+      - name: national_id
+        description: >
+          Government identifier (SSN, TFN, NINO, ...). The highest-risk column
+          in the warehouse.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: government_id
+          masking: redact
+      - name: street_address
+        description: Residential street address.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: address
+          masking: redact
+      - name: city
+        description: Residential city.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: address
+          masking: none
+      - name: postcode
+        description: Residential postcode.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: address
+          masking: generalize
+      - name: country_code
+        description: ISO 3166-1 alpha-2 country of residence.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: kyc_status
+        description: >
+          Know-your-customer state as at the extract date. Changes over time,
+          which is the primary reason dim_customer is SCD2.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["pending", "verified", "rejected", "review_required"]
+        meta: { classification: confidential }
+      - name: risk_rating
+        description: Internal risk band assigned by compliance.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["low", "medium", "high"]
+        meta: { classification: confidential }
+      - name: customer_tier
+        description: Commercial tier, driving fee schedule and support routing.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["bronze", "silver", "gold", "platinum"]
+        meta: { classification: internal }
+      - name: marketing_opt_in
+        description: >
+          Consent flag for marketing contact. Consent state is itself
+          regulated -- acting on a stale value is the compliance failure.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: created_at
+        description: When the customer record was first created.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: updated_at
+        description: Most recent change to the record as at the extract date.
+        meta: { classification: internal }
+
+  - name: stg_accounts
+    description: >
+      One row per brokerage account. Accounts belong to a customer; a small
+      share close during the window.
+    meta:
+      layer: "10_staging"
+      grain: "one row per account_id"
+      owner: "data-platform"
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "closed_at IS NULL OR closed_at >= opened_at"
+    columns:
+      - name: account_id
+        description: Primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: customer_id
+        description: Owning customer. Foreign key to stg_customer_extracts.
+        data_tests: [not_null]
+        meta:
+          classification: internal
+          pii: true
+          pii_type: pseudonymous_id
+          masking: none
+      - name: account_type
+        description: cash, margin or retirement. Governs fees and leverage.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["cash", "margin", "retirement"]
+        meta: { classification: internal }
+      - name: base_currency
+        description: Currency the account is denominated in.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: opened_at
+        description: Timestamp the account was opened.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: closed_at
+        description: Timestamp the account was closed. NULL while open.
+        meta: { classification: internal }
+      - name: opened_date
+        description: Date part of opened_at, for joining to dim_date.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: closed_date
+        description: Date part of closed_at.
+        meta: { classification: internal }
+      - name: account_status
+        description: Derived from closed_at rather than trusted from the source.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["open", "closed"]
+        meta: { classification: internal }
+      - name: margin_limit
+        description: Approved margin borrowing limit in the base currency.
+        meta: { classification: confidential }
+
+  # ========================================================================== #
+  # Activity
+  # ========================================================================== #
+  - name: stg_orders
+    description: >
+      One row per order at its terminal state. Faithful to the source: not
+      deduplicated, not filtered. `int_orders_screened` quarantines defects
+      with a recorded reason.
+    meta:
+      layer: "10_staging"
+      grain: "one row per order_id"
+      owner: "data-platform"
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "resolved_at >= placed_at"
+    columns:
+      - name: order_id
+        description: Primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: account_id
+        description: Placing account.
+        data_tests:
+          - not_null
+          # Detector. Orphans are quarantined by int_orders_screened with reason
+          # `orphan_account`; this test is what makes them visible rather than a
+          # silent row-count drop.
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
+              config:
+                severity: warn
+        meta: { classification: internal }
+      - name: instrument_id
+        description: Instrument being traded.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_instruments')
+                field: instrument_id
+        meta: { classification: internal }
+      - name: side
+        description: buy or sell.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["buy", "sell"]
+        meta: { classification: internal }
+      - name: order_type
+        description: market, limit, stop or stop_limit.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["market", "limit", "stop", "stop_limit"]
+        meta: { classification: internal }
+      - name: time_in_force
+        description: day, gtc or ioc.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: order_status
+        description: Terminal state of the order.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["filled", "partially_filled", "cancelled", "rejected"]
+        meta: { classification: internal }
+      - name: channel
+        description: Client the order arrived through -- ios, android, web, api.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: order_quantity
+        description: >
+          Units requested. Fractional for crypto, whole units otherwise.
+          Must be positive; negative values indicate an upstream defect.
+        data_tests:
+          - not_null
+          # Detector: quarantined as `non_positive_quantity`.
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+              config:
+                severity: warn
+        meta: { classification: internal }
+      - name: limit_price
+        description: Trigger price for non-market orders. NULL for market orders.
+        meta: { classification: internal }
+      - name: placed_at
+        description: When the customer submitted the order.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: resolved_at
+        description: When the order reached its terminal state.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: placed_date
+        description: >
+          Session date the order belongs to. Orders placed while the market was
+          shut carry the date of the session they rolled into.
+        data_tests: [not_null]
+        meta: { classification: internal }
+
+  - name: stg_executions
+    description: >
+      One row per fill. Faithful to the source -- duplicates are defects, not
+      noise, and are quarantined in `int_executions_screened`.
+    meta:
+      layer: "10_staging"
+      grain: "one row per execution_id"
+      owner: "data-platform"
+    columns:
+      - name: execution_id
+        description: Primary key. Duplicated under --inject-anomalies.
+        data_tests:
+          - not_null
+          # Detector: quarantined as `duplicate_execution_id`. A duplicated fill
+          # overstates a customer's holdings, so it must be reported -- but the
+          # screen already stops it reaching the marts.
+          - unique:
+              config:
+                severity: warn
+        meta: { classification: internal }
+      - name: order_id
+        description: Parent order.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
+        meta: { classification: internal }
+      - name: venue
+        description: Execution venue the fill was routed to.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: execution_quantity
+        description: Units filled by this execution.
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+        meta: { classification: internal }
+      - name: execution_price
+        description: Price per unit, in the instrument's listing currency.
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+        meta: { classification: internal }
+      - name: execution_currency
+        description: Currency of execution_price and commission.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: commission
+        description: >
+          Brokerage charged on the fill, in the execution currency. Zero for
+          commission-free US equities.
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+        meta: { classification: internal }
+      - name: gross_notional
+        description: quantity x price, before commission, in the listing currency.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: executed_at
+        description: When the fill occurred.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: executed_date
+        description: Date part of executed_at. The partition key in the source.
+        data_tests: [not_null]
+        meta: { classification: internal }
+
+  - name: stg_cash_movements
+    description: >
+      Cash in and out of an account. Amounts keep the source sign convention so
+      SUM is net flow; `direction` is derived for one-sided aggregation.
+    meta:
+      layer: "10_staging"
+      grain: "one row per movement_id"
+      owner: "data-platform"
+    columns:
+      - name: movement_id
+        description: Primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: account_id
+        description: Account the cash moved through.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
+        meta: { classification: internal }
+      - name: movement_type
+        description: deposit, withdrawal, fee, dividend or interest.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["deposit", "withdrawal", "fee", "dividend", "interest"]
+        meta: { classification: internal }
+      - name: payment_method
+        description: How the money moved. NULL for internal accruals.
+        meta: { classification: confidential }
+      - name: amount
+        description: Signed amount. Negative for withdrawals and fees.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: absolute_amount
+        description: Unsigned magnitude, for inflow/outflow aggregation.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: direction
+        description: inflow or outflow, derived from the sign of amount.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["inflow", "outflow"]
+        meta: { classification: internal }
+      - name: movement_currency
+        description: Currency of the movement, matching the account base currency.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: occurred_at
+        description: When the movement settled.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: occurred_date
+        description: Date part of occurred_at.
+        data_tests: [not_null]
+        meta: { classification: internal }
+
+  - name: stg_app_events
+    description: >
+      Clickstream events grouped into sessions. Highest-volume model in the
+      warehouse, and the one that proves the classification framework looks at
+      more than column names -- see `ip_address` and `user_agent`.
+    meta:
+      layer: "10_staging"
+      grain: "one row per event_id"
+      owner: "data-platform"
+      contains_pii: true
+    columns:
+      - name: event_id
+        description: Primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: session_id
+        description: Groups events belonging to one app session.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: customer_id
+        description: Customer who generated the event.
+        data_tests: [not_null]
+        meta:
+          classification: internal
+          pii: true
+          pii_type: pseudonymous_id
+          masking: none
+      - name: event_type
+        description: What the customer did.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: device_family
+        description: Device or browser family, derived from the user agent.
+        meta: { classification: internal }
+      - name: app_version
+        description: Client build that emitted the event.
+        meta: { classification: internal }
+      - name: user_agent
+        description: >
+          Raw client user-agent string. Personal data: high-entropy enough to
+          contribute to device fingerprinting, so it is confidential and hashed
+          for everyone below auditor clearance.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: device_fingerprint
+          masking: hash
+      - name: ip_address
+        description: >
+          Full client IP. Personal data under GDPR Recital 30 -- it identifies a
+          subscriber line, not just a machine. Analysts should use
+          ip_address_prefix instead.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: online_identifier
+          masking: redact
+      - name: ip_address_prefix
+        description: >
+          The /24 prefix of the client IP. Retains geography and network
+          signal, drops the ability to single out a household.
+        meta:
+          classification: internal
+          pii: true
+          pii_type: online_identifier
+          masking: none
+          # Documented exemption -- see enforcement.exemption_meta_key in
+          # governance/policy.yml. Without this the classification gate rejects
+          # the column on its name alone, which is the correct default.
+          classification_rationale: >
+            Deliberately truncated to a /24 so that it is the safe alternative to
+            ip_address rather than a second copy of it. The last octet is what
+            identifies a subscriber line; a /24 spans up to 254 addresses and is
+            widely treated as aggregated network data. Classifying it
+            confidential would put it out of reach of the analysts it was created
+            for, leaving them to reach for the raw address instead -- a strictly
+            worse outcome. The raw ip_address remains restricted and redacted.
+      - name: occurred_at
+        description: When the event fired on the client.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: event_date
+        description: Date part of occurred_at. The partition key in the source.
+        data_tests: [not_null]
+        meta: { classification: internal }

@@ -1,0 +1,196 @@
+version: 2
+
+sources:
+  - name: landing
+    description: >
+      The raw landing zone: Hive-partitioned Parquet written by
+      `ingestion/generate.py`, read in place rather than copied. This is the
+      warehouse's only contact with the outside world -- everything downstream
+      sees DuckDB relations.
+
+      dbt never writes here. Treating the landing zone as immutable is what
+      makes a full rebuild cheap and a bad transform recoverable.
+    meta:
+      layer: "00_landing"
+      owner: "data-platform"
+      # dbt-duckdb resolves each table to this expression, with {name}
+      # substituted for the table name. Hive partitioning turns the directory
+      # names into real columns, so partition pruning works on a plain filter.
+      #
+      # The root comes from an environment variable rather than a dbt var, and
+      # the Makefile exports it as an absolute path. Staging models are views
+      # over these paths, and DuckDB resolves a relative path against whichever
+      # process opens the database -- so a relative root makes the warehouse
+      # readable from warehouse/ and nowhere else, breaking the dashboard,
+      # Dagster and any ad-hoc query. Set it to an s3:// prefix to read from
+      # object storage instead.
+      external_location: >-
+        read_parquet('{{ env_var("TRADEFLOW_LANDING_PATH", "../data/landing") }}/{name}/**/*.parquet',
+        hive_partitioning = true)
+
+    # Every table carries `ingested_at`, so freshness is a property of the data
+    # rather than of the file mtime -- the same check works against object
+    # storage, where mtime lies after a copy.
+    freshness:
+      warn_after: { count: "{{ var('freshness_warn_after_hours') }}", period: hour }
+      error_after: { count: "{{ var('freshness_error_after_hours') }}", period: hour }
+    loaded_at_field: ingested_at
+
+    tables:
+      # ----------------------------------------------------------------- #
+      # Reference data
+      # ----------------------------------------------------------------- #
+      - name: instruments
+        description: >
+          One row per tradeable instrument. Real-world symbols, names, sectors,
+          exchanges and listing currencies; the numeric simulation parameters
+          are invented. Not partitioned -- it is a small reference table.
+        meta:
+          contains_pii: false
+          grain: "one row per instrument_id"
+        columns:
+          - name: instrument_id
+            description: Surrogate key assigned by the generator.
+            data_tests: [not_null, unique]
+          - name: symbol
+            description: Exchange ticker. Unique across the reference set.
+            data_tests: [not_null, unique]
+
+      - name: market_prices
+        description: >
+          Daily OHLCV per instrument. Partitioned by `price_month` rather than
+          by day: 36 partitions instead of 1,100 for the same pruning benefit,
+          because nothing queries a single historical day of prices.
+          Equity rows exist only on trading days; crypto trades every day.
+        meta:
+          contains_pii: false
+          grain: "one row per instrument_id per price_date"
+        columns:
+          - name: instrument_id
+            data_tests: [not_null]
+          - name: price_date
+            data_tests: [not_null]
+
+      - name: fx_rates
+        description: >
+          Daily rate per currency pair against the reporting currency,
+          including the identity row USD -> USD so downstream conversion never
+          needs a special case. Quoted on every calendar day, including
+          weekends, so a fill can always be converted without a gap-fill join.
+        meta:
+          contains_pii: false
+          grain: "one row per base_currency, quote_currency, rate_date"
+
+      # ----------------------------------------------------------------- #
+      # Party data -- the PII surface
+      # ----------------------------------------------------------------- #
+      - name: customer_extracts
+        description: >
+          Month-end full-table extracts of the mutable customer record: one row
+          per customer per extract date, holding that customer's state as at
+          that date. This is the raw material for `dim_customer`'s SCD2 history.
+
+          The extract shape is deliberate. A dbt snapshot would be the
+          idiomatic route, but snapshots can only accumulate history by being
+          run repeatedly over real elapsed time, which means the SCD2 logic
+          could never be demonstrated on a fresh clone or asserted in CI.
+          See docs/adr/0004.
+        meta:
+          contains_pii: true
+          pii_categories: ["identity", "contact", "location", "government_id"]
+          grain: "one row per customer_id per extract_date"
+        columns:
+          - name: customer_id
+            data_tests: [not_null]
+          - name: extract_date
+            data_tests: [not_null]
+
+      - name: accounts
+        description: >
+          One row per brokerage account. Accounts belong to a customer and are
+          opened on or after that customer signed up; a small share close
+          during the window, which the daily snapshot facts must handle.
+        meta:
+          contains_pii: false
+          grain: "one row per account_id"
+        columns:
+          - name: account_id
+            data_tests: [not_null, unique]
+          - name: customer_id
+            data_tests: [not_null]
+
+      # ----------------------------------------------------------------- #
+      # Activity data
+      # ----------------------------------------------------------------- #
+      - name: orders
+        description: >
+          One row per order at its terminal state, partitioned by the date it
+          was placed. Orders placed while a market is closed carry the date of
+          the session they rolled into, which is both what a real broker does
+          and the source of the Monday spike in the activity charts.
+
+          Known defects when the generator runs with `--inject-anomalies`:
+          orphan `account_id` values and negative quantities. Both are caught
+          and quarantined in `int_orders_screened` rather than silently
+          dropped.
+        meta:
+          contains_pii: false
+          grain: "one row per order_id"
+        columns:
+          - name: order_id
+            data_tests: [not_null]
+          - name: account_id
+            data_tests: [not_null]
+
+      - name: executions
+        description: >
+          One row per fill. Many fills per order, none for cancelled or
+          rejected orders. Fill prices sit inside the instrument's traded range
+          for the day, so slippage against the close is a real measurable
+          rather than a constant.
+
+          Known defects under `--inject-anomalies`: duplicated rows, quantities
+          exceeding the parent order, and fills timestamped before their order
+          was placed.
+        meta:
+          contains_pii: false
+          grain: "one row per execution_id"
+        columns:
+          - name: execution_id
+            data_tests: [not_null]
+          - name: order_id
+            data_tests: [not_null]
+
+      - name: cash_movements
+        description: >
+          Deposits, withdrawals, fees, interest and dividends, in the account's
+          base currency. Dividend rows are approximated from buy-side fills
+          rather than from a true holdings ledger -- reconstructing positions is
+          the warehouse's job, not the generator's.
+        meta:
+          contains_pii: false
+          grain: "one row per movement_id"
+        columns:
+          - name: movement_id
+            data_tests: [not_null, unique]
+          - name: account_id
+            data_tests: [not_null]
+
+      - name: app_events
+        description: >
+          Mobile and web clickstream, grouped into sessions. The largest table
+          by row count, as event data always is.
+
+          Carries `ip_address` and `user_agent`. Both are personal data under
+          GDPR and both are routinely missed by classification exercises that
+          only look for obvious identity columns, which is exactly why they are
+          here.
+        meta:
+          contains_pii: true
+          pii_categories: ["online_identifier", "device"]
+          grain: "one row per event_id"
+        columns:
+          - name: event_id
+            data_tests: [not_null]
+          - name: customer_id
+            data_tests: [not_null]

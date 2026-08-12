@@ -1,0 +1,7 @@
+-r base.txt
+
+# Dagster. Kept separate from base so the dbt CI job does not install an
+# orchestrator it never runs.
+dagster~=1.11
+dagster-dbt~=0.27
+dagster-webserver~=1.11

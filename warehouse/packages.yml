@@ -1,0 +1,10 @@
+packages:
+  # Surrogate keys, date spines, and the expression tests the schema tests
+  # cannot express.
+  - package: dbt-labs/dbt_utils
+    version: [">=1.3.0", "<2.0.0"]
+
+  # Distributional and statistical assertions -- the difference between "this
+  # column is not null" and "this column's daily row count is within tolerance".
+  - package: metaplane/dbt_expectations
+    version: [">=0.10.0", "<0.11.0"]

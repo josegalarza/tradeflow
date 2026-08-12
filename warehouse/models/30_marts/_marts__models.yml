@@ -1,0 +1,905 @@
+version: 2
+
+# ---------------------------------------------------------------------------- #
+# The marts layer is the warehouse's public interface. Everything here is a
+# table, has a documented grain, and has that grain enforced by a test.
+#
+# CLASSIFICATION SCOPE
+#
+# Column-level classification is mandatory in two places, and both are enforced
+# by governance/check_classification.py:
+#
+#   1. every column in 10_staging -- the boundary where data enters, and the only
+#      place where the full source shape is visible;
+#   2. every column of a mart marked `contains_pii: true` -- the models where
+#      personal data persists and where the secure views are generated from.
+#
+# Derived non-PII mart columns (counts, sums, rates, surrogate keys) inherit
+# `internal` from the layer default declared in governance/policy.yml. Tagging
+# 200 arithmetic columns individually would not make the warehouse safer; it
+# would make the tags too tedious to maintain, which is how governance
+# frameworks actually die.
+# ---------------------------------------------------------------------------- #
+
+models:
+  # ========================================================================== #
+  # Dimensions
+  # ========================================================================== #
+  - name: dim_date
+    description: >
+      Calendar dimension spanning every date observed anywhere in the
+      warehouse. The trading-day flag is derived from the price feed rather than
+      a hardcoded holiday list.
+
+      Grain: one row per calendar date.
+    meta:
+      layer: "30_marts"
+      grain: "one row per date_day"
+      owner: "data-platform"
+      kimball_type: "dimension"
+    columns:
+      - name: date_day
+        description: Primary key. The calendar date.
+        data_tests: [not_null, unique]
+        meta: { classification: public }
+      - name: date_key
+        description: >
+          Integer YYYYMMDD form, provided for convention. The facts join on
+          date_day -- see the model header for why.
+        data_tests: [not_null, unique]
+        meta: { classification: public }
+      - name: is_trading_day
+        description: True if any non-crypto instrument was priced on this date.
+        data_tests: [not_null]
+        meta: { classification: public }
+      - name: fiscal_year
+        description: Australian fiscal year (July to June) this date falls in.
+        data_tests: [not_null]
+        meta: { classification: public }
+
+  - name: dim_customer
+    description: >
+      Customer dimension, Type 2. One row per customer per version of their
+      attributes; facts resolve to the version current when the event happened.
+
+      Grain: one row per customer_id per valid_from.
+
+      The most sensitive model in the warehouse. Read alongside
+      governance/policy.yml and the generated 40_secure views -- nothing here is
+      masked, and direct access to this model is what the secure layer exists to
+      avoid.
+    meta:
+      layer: "30_marts"
+      grain: "one row per customer_id per valid_from"
+      owner: "data-platform"
+      kimball_type: "dimension_scd2"
+      contains_pii: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [customer_id, valid_from]
+      # The defining property of a Type 2 dimension -- for any customer and any
+      # date exactly one version applies -- is checked by
+      # tests/assert_customer_scd2_windows_are_sound.sql rather than by
+      # dbt_utils.mutually_exclusive_ranges.
+      #
+      # That test assumes half-open intervals, where one row's upper bound equals
+      # the next row's lower bound. This dimension uses inclusive bounds on
+      # purpose (see int_customer_versions), so every correct boundary would be
+      # reported as a one-day gap. A test that has to be configured to ignore the
+      # convention it is checking is not checking anything.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "valid_to >= valid_from"
+    columns:
+      - name: customer_key
+        description: >
+          Surrogate primary key. Hash of (customer_id, valid_from). This is what
+          facts carry.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: customer_id
+        description: Natural key of the customer, stable across all versions.
+        data_tests: [not_null]
+        meta:
+          classification: internal
+          pii: true
+          pii_type: pseudonymous_id
+          masking: none
+      - name: version_number
+        description: 1-based sequence of this version within the customer.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: valid_from
+        description: First date this version applied. Inclusive.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: valid_to
+        description: >
+          Last date this version applied. Inclusive -- 9999-12-31 while current.
+          Inclusive because BETWEEN is what analysts write.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: is_current
+        description: True for the version in force now. Exactly one per customer.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: first_name
+        description: Given name.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: last_name
+        description: Family name.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: full_name
+        description: Display name.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: email
+        description: Contact email as at this version.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: email
+          masking: hash
+      - name: phone_number
+        description: Contact number as at this version.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: phone
+          masking: partial
+      - name: national_id
+        description: Government identifier. Highest-risk column in the warehouse.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: government_id
+          masking: redact
+      - name: date_of_birth
+        description: Date of birth.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: date_of_birth
+          masking: generalize
+      - name: street_address
+        description: Residential street address as at this version.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: address
+          masking: redact
+      - name: city
+        description: Residential city.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: address
+          masking: none
+      - name: postcode
+        description: Residential postcode.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: address
+          masking: generalize
+      - name: country_code
+        description: ISO 3166-1 alpha-2 country of residence.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: kyc_status
+        description: KYC state as at this version.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: risk_rating
+        description: Compliance risk band as at this version.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: customer_tier
+        description: Commercial tier as at this version.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: marketing_opt_in
+        description: Marketing consent as at this version.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: age_years
+        description: >
+          Exact age at valid_from, not today -- see the model header. Prefer
+          age_band: an exact age combined with a postcode narrows a population
+          fast.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: date_of_birth
+          # Redacted rather than generalised, because generalising it would just
+          # reproduce age_band, which already exists beside it and is classified
+          # internal. Same pattern as ip_address / ip_address_prefix: publish the
+          # safe derivative, redact the precise original.
+          masking: redact
+      - name: age_band
+        description: >
+          Bucketed age at valid_from. The column analysts should use: it carries
+          the demographic signal without the identifier.
+        meta: { classification: internal }
+      - name: tenure_days_at_version
+        description: Days between signup and this version opening.
+        meta: { classification: internal }
+      - name: signup_date
+        description: Date the customer record was created.
+        meta: { classification: internal }
+      - name: signup_month
+        description: Month the customer signed up, for cohort analysis.
+        meta: { classification: internal }
+      - name: is_kyc_verified
+        description: Convenience flag for kyc_status = 'verified'.
+        meta: { classification: internal }
+      - name: created_at
+        description: Customer record creation timestamp.
+        meta: { classification: internal }
+      - name: updated_at
+        description: Most recent source change as at this version.
+        meta: { classification: internal }
+      - name: observed_at_extract_date
+        description: >
+          The extract this version was first seen in. Provenance, for tracing a
+          version back to the file it came from.
+        meta: { classification: internal }
+      - name: attribute_hash
+        description: >
+          Hash of the tracked attributes. The change-detection mechanism; kept
+          for debugging why a version boundary exists.
+        meta: { classification: internal }
+
+  - name: dim_account
+    description: >
+      Account dimension, Type 1 -- nothing on an account changes in a way that
+      needs history. Carries lifecycle attributes and lifetime activity summary.
+
+      Grain: one row per account_id.
+    meta:
+      layer: "30_marts"
+      grain: "one row per account_id"
+      owner: "data-platform"
+      kimball_type: "dimension"
+    columns:
+      - name: account_key
+        description: Surrogate primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: account_id
+        description: Natural key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: customer_id
+        description: >
+          Owning customer, as a natural key rather than a customer_key: the
+          owner does not change, so pinning it to one SCD2 version would be
+          arbitrary.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: account_type
+        description: cash, margin or retirement.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["cash", "margin", "retirement"]
+        meta: { classification: internal }
+      - name: account_status
+        description: open or closed, derived from closed_at.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: has_ever_traded
+        description: True if any valid fill exists for the account.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: days_to_first_trade
+        description: >
+          Days from opening to first fill. NULL if never traded, which is the
+          honest answer -- zero would imply they traded on day one.
+        meta: { classification: internal }
+
+  - name: dim_instrument
+    description: >
+      Instrument dimension, Type 1. The conformed dimension of this warehouse.
+      Latest price attributes are denormalised on for convenience.
+
+      Grain: one row per instrument_id.
+    meta:
+      layer: "30_marts"
+      grain: "one row per instrument_id"
+      owner: "data-platform"
+      kimball_type: "dimension_conformed"
+    columns:
+      - name: instrument_key
+        description: Surrogate primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: public }
+      - name: instrument_id
+        description: Natural key.
+        data_tests: [not_null, unique]
+        meta: { classification: public }
+      - name: symbol
+        description: Exchange ticker.
+        data_tests: [not_null, unique]
+        meta: { classification: public }
+      - name: asset_class
+        description: equity, etf or crypto.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["equity", "etf", "crypto"]
+        meta: { classification: public }
+      - name: latest_close_price
+        description: Most recent close. Denormalised for the dashboard.
+        meta: { classification: public }
+
+  # ========================================================================== #
+  # Facts -- one of each Kimball grain
+  # ========================================================================== #
+  - name: fct_executions
+    description: >
+      Transaction fact. One row per fill -- the atomic grain of the warehouse.
+      Every measure is fully additive. Resolves the customer key as-of the
+      execution date via ASOF JOIN.
+
+      Grain: one row per execution_id.
+    meta:
+      layer: "30_marts"
+      grain: "one row per execution_id"
+      owner: "data-platform"
+      kimball_type: "fact_transaction"
+    data_tests:
+      # Row count parity with the model it is built from. A fact that grew during
+      # its dimension joins has a fan-out bug, and this is the cheapest possible
+      # way to detect it -- the failure mode a Type 2 dimension invites.
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('int_executions_priced')
+    columns:
+      - name: execution_id
+        description: Degenerate dimension. Primary key, for traceability.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: customer_key
+        description: >
+          Customer dimension version current at the execution date. Not the
+          customer's current version.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+        meta: { classification: internal }
+      - name: instrument_key
+        description: Instrument dimension key.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_instrument')
+                field: instrument_key
+        meta: { classification: internal }
+      - name: account_key
+        description: Account dimension key.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_account')
+                field: account_key
+        meta: { classification: internal }
+      - name: date_day
+        description: Date the fill occurred. Joins to dim_date.
+        data_tests:
+          - not_null
+          # This test is here because its absence hid a real bug: fills can be
+          # timestamped a day after the last priced session, and dim_date was
+          # originally built from the price feed alone.
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+        meta: { classification: internal }
+      - name: execution_quantity
+        description: Units filled. Additive.
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+        meta: { classification: internal }
+      - name: signed_quantity
+        description: >
+          Quantity signed by side -- positive for buys, negative for sells. What
+          makes the position snapshot a running SUM.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: gross_notional_reporting
+        description: quantity x price in the reporting currency, before commission.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: signed_cash_flow_reporting
+        description: >
+          Cash effect of the fill in the reporting currency: negative for buys
+          (including commission), positive for sells (net of it).
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: slippage_vs_close
+        description: >
+          Execution price versus the session close, signed so negative is
+          favourable to the customer. NULL when the instrument had no price that
+          day.
+        meta: { classification: internal }
+      - name: fx_rate_to_reporting
+        description: Rate applied to convert to the reporting currency.
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+        meta: { classification: internal }
+
+  - name: fct_orders
+    description: >
+      Accumulating snapshot fact. One row per order, carrying lifecycle
+      milestones and the lags between them. Cancelled and rejected orders are
+      retained with zero fills.
+
+      Grain: one row per order_id.
+    meta:
+      layer: "30_marts"
+      grain: "one row per order_id"
+      owner: "data-platform"
+      kimball_type: "fact_accumulating_snapshot"
+    data_tests:
+      # Physically impossible states, as opposed to merely unexpected ones.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "filled_quantity <= order_quantity + 0.00000001"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "first_filled_at IS NULL OR first_filled_at >= placed_at"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: >
+              last_filled_at IS NULL OR first_filled_at IS NULL
+              OR last_filled_at >= first_filled_at
+      # A cancelled order that filled means the order status and the fill feed
+      # disagree, and one of them is lying.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "NOT (is_cancelled AND fill_count > 0)"
+    columns:
+      - name: order_id
+        description: Degenerate dimension. Primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: date_day
+        description: Session date the order belongs to.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+        meta: { classification: internal }
+      - name: customer_key
+        description: Customer version current when the order was placed.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: customer_key
+        meta: { classification: internal }
+      - name: order_status
+        description: Terminal state.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["filled", "partially_filled", "cancelled", "rejected"]
+        meta: { classification: internal }
+      - name: fill_rate
+        description: >
+          filled_quantity / order_quantity. NULL rather than zero when the order
+          quantity is zero, which cannot happen but should not silently become a
+          number if it did.
+        meta: { classification: internal }
+      - name: seconds_to_first_fill
+        description: >
+          Milestone lag: order placed to first fill. NULL for orders that never
+          filled -- the reason this grain is an accumulating snapshot.
+        meta: { classification: internal }
+
+  - name: fct_positions_daily
+    description: >
+      Periodic snapshot fact. One row per account, instrument and day on which a
+      position was held, within a trailing window. Incremental.
+
+      Grain: one row per account_id, instrument_id, snapshot_date.
+
+      Only non-zero holdings exist as rows -- see the model header for why the
+      naive accounts x instruments x days spine is not viable.
+    meta:
+      layer: "30_marts"
+      grain: "one row per account_id, instrument_id, snapshot_date"
+      owner: "data-platform"
+      kimball_type: "fact_periodic_snapshot"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [account_id, instrument_id, snapshot_date]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "position_quantity > 0"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "mark_price_date <= snapshot_date"
+    columns:
+      - name: snapshot_date
+        description: The day this position is being observed on.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+        meta: { classification: internal }
+      - name: position_quantity
+        description: Units held at end of day. Semi-additive -- never sum over dates.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: market_value_reporting
+        description: >
+          Position marked to market in the reporting currency. Semi-additive:
+          additive across accounts and instruments, meaningless summed over
+          dates.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: net_invested_reporting
+        description: >
+          Cumulative purchase cost less sale proceeds for this position. Net
+          capital deployed, deliberately NOT a weighted-average cost basis --
+          see the model header.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: unrealised_gain_reporting
+        description: Market value less net invested capital.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: is_stale_price
+        description: >
+          True when the mark price comes from an earlier session -- weekends,
+          holidays, and suspended instruments. Roughly 28% of rows, and the
+          reason the price join is an ASOF JOIN.
+        data_tests: [not_null]
+        meta: { classification: internal }
+
+  - name: fct_account_daily
+    description: >
+      Periodic snapshot fact. One row per account per day it was open, within the
+      same trailing window as fct_positions_daily. Carries the account's cash,
+      holdings, equity and P&L decomposition.
+
+      Grain: one row per account_id, snapshot_date.
+    meta:
+      layer: "30_marts"
+      grain: "one row per account_id, snapshot_date"
+      owner: "data-platform"
+      kimball_type: "fact_periodic_snapshot"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [account_id, snapshot_date]
+      # The accounting identity. Tautological given how the columns are built,
+      # which makes it a regression guard rather than a discovery: it fails the
+      # moment someone changes one term without the others. The genuine
+      # correctness check is tests/assert_account_cash_reconciles_to_source.sql,
+      # which rebuilds the balance from the atomic facts instead.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: >
+              ABS(
+                account_equity_reporting
+                - (net_funded_reporting + cumulative_income_reporting
+                   - cumulative_fees_reporting - cumulative_commission_reporting
+                   + unrealised_gain_reporting + realised_gain_reporting)
+              ) < 0.05
+    columns:
+      - name: snapshot_date
+        description: Day being observed.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+        meta: { classification: internal }
+      - name: cash_balance_reporting
+        description: >
+          Cash at end of day, accumulated from account inception. May be negative
+          on margin accounts by design.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: account_equity_reporting
+        description: Cash plus market value of holdings.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: realised_gain_reporting
+        description: >
+          Profit or loss on positions that have been closed out. Derived as
+          capital deployed into holdings that is no longer represented by an open
+          position.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: unrealised_gain_reporting
+        description: Mark-to-market gain on positions still held.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+
+  # ========================================================================== #
+  # Aggregates -- performance, never capability
+  # ========================================================================== #
+  - name: agg_daily_trading_activity
+    description: >
+      Daily trading activity by channel and asset class. Serves the dashboard's
+      landing page so it never scans the atomic facts.
+
+      Grain: one row per date_day, channel, asset_class.
+    meta:
+      layer: "30_marts"
+      grain: "one row per date_day, channel, asset_class"
+      owner: "data-platform"
+      kimball_type: "aggregate"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [date_day, channel, asset_class]
+      # The aggregate must agree with the fact it summarises, or the warehouse
+      # has two versions of the truth and the faster one wins arguments.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "filled_order_count <= order_count"
+    columns:
+      - name: date_day
+        description: Activity date.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+        meta: { classification: internal }
+      - name: cancellation_rate
+        description: Cancelled orders / total orders. NULL on zero-order days.
+        meta: { classification: internal }
+
+  - name: agg_customer_performance
+    description: >
+      One row per customer: lifetime trading behaviour, engagement and current
+      portfolio state. Joined to the current version of dim_customer, which is
+      the one legitimate use of `is_current`.
+
+      Grain: one row per customer_id.
+    meta:
+      layer: "30_marts"
+      grain: "one row per customer_id"
+      owner: "data-platform"
+      kimball_type: "aggregate"
+      contains_pii: true
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "lifetime_cancelled_count <= lifetime_order_count"
+    columns:
+      - name: customer_key
+        description: Current customer dimension version.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: customer_id
+        description: Natural key.
+        data_tests: [not_null, unique]
+        meta:
+          classification: internal
+          pii: true
+          pii_type: pseudonymous_id
+          masking: none
+      - name: full_name
+        description: Display name, current version.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: email
+        description: Contact email, current version.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: email
+          masking: hash
+      - name: country_code
+        description: Country of residence.
+        meta: { classification: internal }
+      - name: customer_tier
+        description: Current commercial tier.
+        meta: { classification: internal }
+      - name: risk_rating
+        description: Current compliance risk band.
+        meta: { classification: confidential }
+      - name: kyc_status
+        description: Current KYC state.
+        meta: { classification: confidential }
+      - name: age_band
+        description: Bucketed age. Use instead of date_of_birth.
+        meta: { classification: internal }
+      - name: marketing_opt_in
+        description: Current marketing consent.
+        meta: { classification: confidential }
+      - name: signup_date
+        description: Date the customer joined.
+        meta: { classification: internal }
+      - name: signup_month
+        description: Signup cohort.
+        meta: { classification: internal }
+      - name: tenure_days
+        description: Days since signup.
+        meta: { classification: internal }
+      - name: account_count
+        description: Accounts held at the latest snapshot date.
+        meta: { classification: internal }
+      - name: account_equity_reporting
+        description: Total equity across the customer's accounts.
+        meta: { classification: confidential }
+      - name: cash_balance_reporting
+        description: Total cash across the customer's accounts.
+        meta: { classification: confidential }
+      - name: holdings_value_reporting
+        description: Market value of all holdings.
+        meta: { classification: confidential }
+      - name: net_funded_reporting
+        description: Deposits less withdrawals, lifetime.
+        meta: { classification: confidential }
+      - name: unrealised_gain_reporting
+        description: Mark-to-market gain on open positions.
+        meta: { classification: confidential }
+      - name: realised_gain_reporting
+        description: Profit or loss on closed positions.
+        meta: { classification: confidential }
+      - name: total_gain_reporting
+        description: Realised plus unrealised.
+        meta: { classification: confidential }
+      - name: return_on_funded
+        description: >
+          Total gain / net funded. NULL rather than zero for customers who have
+          funded nothing -- an undefined return, not a flat one.
+        meta: { classification: confidential }
+      - name: open_position_count
+        description: Open positions at the latest snapshot date.
+        meta: { classification: internal }
+      - name: lifetime_fill_count
+        description: Fills, lifetime.
+        meta: { classification: internal }
+      - name: lifetime_order_count
+        description: Orders placed, lifetime.
+        meta: { classification: internal }
+      - name: lifetime_cancelled_count
+        description: Orders cancelled, lifetime.
+        meta: { classification: internal }
+      - name: lifetime_traded_notional_reporting
+        description: Gross traded value, lifetime.
+        meta: { classification: confidential }
+      - name: lifetime_commission_reporting
+        description: Commission paid, lifetime. The customer's revenue to us.
+        meta: { classification: confidential }
+      - name: mean_fill_notional_reporting
+        description: Average size of a fill.
+        meta: { classification: confidential }
+      - name: trading_days
+        description: Distinct days on which the customer traded.
+        meta: { classification: internal }
+      - name: distinct_instruments_traded
+        description: Breadth of the customer's trading.
+        meta: { classification: internal }
+      - name: distinct_sectors_traded
+        description: Sector breadth, a crude diversification proxy.
+        meta: { classification: internal }
+      - name: first_trade_date
+        description: Date of first fill.
+        meta: { classification: internal }
+      - name: last_trade_date
+        description: Date of most recent fill.
+        meta: { classification: internal }
+      - name: largest_trade_symbol
+        description: Instrument the customer has committed the most value to.
+        meta: { classification: internal }
+      - name: primary_channel
+        description: Most-used order channel.
+        meta: { classification: internal }
+      - name: lifetime_event_count
+        description: App events, lifetime.
+        meta: { classification: internal }
+      - name: lifetime_session_count
+        description: App sessions, lifetime.
+        meta: { classification: internal }
+      - name: app_active_days
+        description: Distinct days with app activity.
+        meta: { classification: internal }
+      - name: last_seen_at
+        description: >
+          Most recent app event. Behavioural, and precise enough to reveal daily
+          routine, so it is classified confidential rather than internal.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: behavioural
+          masking: generalize
+      - name: primary_device_family
+        description: Most-used device family.
+        meta: { classification: internal }
+      - name: cancellation_rate
+        description: Cancelled / placed, lifetime.
+        meta: { classification: internal }
+      - name: has_ever_traded
+        description: True if the customer has any fill.
+        meta: { classification: internal }
+
+  - name: agg_data_quality
+    description: >
+      Quarantine summary: what the screening layer rejected, when, why, and at
+      what rate. Turns "we drop bad rows" from a claim into an observable, and
+      feeds both the dashboard's data quality page and the Slack notifier.
+
+      Grain: one row per model, activity date and reject reason.
+    meta:
+      layer: "30_marts"
+      grain: "one row per model_name, activity_date, reject_reason"
+      owner: "data-platform"
+      kimball_type: "aggregate"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [model_name, activity_date, reject_reason]
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "total_rejected_rows <= total_rows"
+    columns:
+      - name: model_name
+        description: Which screened model the rejection came from.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["orders", "executions"]
+        meta: { classification: internal }
+      - name: activity_date
+        description: Business date of the rejected rows.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: reject_reason
+        description: >
+          The specific check that failed, or 'none' for the clean-row rows that
+          provide the denominator.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: overall_reject_rate
+        description: >
+          Rejected rows / total rows for that model and day. The measure the
+          quality gate is threshold-tested against.
+        meta: { classification: internal }

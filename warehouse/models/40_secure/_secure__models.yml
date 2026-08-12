@@ -1,0 +1,409 @@
+version: 2
+
+# GENERATED FILE -- DO NOT EDIT.
+# Written by governance/generate_secure_views.py.
+#
+# One view per role per in-scope mart. Each role's schema is what that
+# role would be granted access to; `marts` itself is granted to nobody
+# outside the data team.
+
+models:
+  - name: analyst__agg_customer_performance
+    description: >
+      agg_customer_performance as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: agg_customer_performance
+      generated: true
+
+  - name: analyst__agg_daily_trading_activity
+    description: >
+      agg_daily_trading_activity as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: agg_daily_trading_activity
+      generated: true
+
+  - name: analyst__agg_data_quality
+    description: >
+      agg_data_quality as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: agg_data_quality
+      generated: true
+
+  - name: analyst__dim_account
+    description: >
+      dim_account as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: dim_account
+      generated: true
+
+  - name: analyst__dim_customer
+    description: >
+      dim_customer as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: dim_customer
+      generated: true
+
+  - name: analyst__dim_instrument
+    description: >
+      dim_instrument as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: dim_instrument
+      generated: true
+
+  - name: analyst__fct_account_daily
+    description: >
+      fct_account_daily as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: fct_account_daily
+      generated: true
+
+  - name: analyst__fct_executions
+    description: >
+      fct_executions as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: fct_executions
+      generated: true
+
+  - name: analyst__fct_orders
+    description: >
+      fct_orders as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: fct_orders
+      generated: true
+
+  - name: analyst__fct_positions_daily
+    description: >
+      fct_positions_daily as seen by the `analyst` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: analyst
+      source_model: fct_positions_daily
+      generated: true
+
+  - name: auditor__agg_customer_performance
+    description: >
+      agg_customer_performance as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: agg_customer_performance
+      generated: true
+
+  - name: auditor__agg_daily_trading_activity
+    description: >
+      agg_daily_trading_activity as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: agg_daily_trading_activity
+      generated: true
+
+  - name: auditor__agg_data_quality
+    description: >
+      agg_data_quality as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: agg_data_quality
+      generated: true
+
+  - name: auditor__dim_account
+    description: >
+      dim_account as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: dim_account
+      generated: true
+
+  - name: auditor__dim_customer
+    description: >
+      dim_customer as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: dim_customer
+      generated: true
+
+  - name: auditor__dim_instrument
+    description: >
+      dim_instrument as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: dim_instrument
+      generated: true
+
+  - name: auditor__fct_account_daily
+    description: >
+      fct_account_daily as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: fct_account_daily
+      generated: true
+
+  - name: auditor__fct_executions
+    description: >
+      fct_executions as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: fct_executions
+      generated: true
+
+  - name: auditor__fct_orders
+    description: >
+      fct_orders as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: fct_orders
+      generated: true
+
+  - name: auditor__fct_positions_daily
+    description: >
+      fct_positions_daily as seen by the `auditor` role (clearance: restricted). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: auditor
+      source_model: fct_positions_daily
+      generated: true
+
+  - name: marketing__agg_customer_performance
+    description: >
+      agg_customer_performance as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: agg_customer_performance
+      generated: true
+
+  - name: marketing__agg_daily_trading_activity
+    description: >
+      agg_daily_trading_activity as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: agg_daily_trading_activity
+      generated: true
+
+  - name: marketing__agg_data_quality
+    description: >
+      agg_data_quality as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: agg_data_quality
+      generated: true
+
+  - name: marketing__dim_account
+    description: >
+      dim_account as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: dim_account
+      generated: true
+
+  - name: marketing__dim_customer
+    description: >
+      dim_customer as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: dim_customer
+      generated: true
+
+  - name: marketing__dim_instrument
+    description: >
+      dim_instrument as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: dim_instrument
+      generated: true
+
+  - name: marketing__fct_account_daily
+    description: >
+      fct_account_daily as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: fct_account_daily
+      generated: true
+
+  - name: marketing__fct_executions
+    description: >
+      fct_executions as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: fct_executions
+      generated: true
+
+  - name: marketing__fct_orders
+    description: >
+      fct_orders as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: fct_orders
+      generated: true
+
+  - name: marketing__fct_positions_daily
+    description: >
+      fct_positions_daily as seen by the `marketing` role (clearance: internal). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: marketing
+      source_model: fct_positions_daily
+      generated: true
+
+  - name: support__agg_customer_performance
+    description: >
+      agg_customer_performance as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: agg_customer_performance
+      generated: true
+
+  - name: support__agg_daily_trading_activity
+    description: >
+      agg_daily_trading_activity as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: agg_daily_trading_activity
+      generated: true
+
+  - name: support__agg_data_quality
+    description: >
+      agg_data_quality as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: agg_data_quality
+      generated: true
+
+  - name: support__dim_account
+    description: >
+      dim_account as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: dim_account
+      generated: true
+
+  - name: support__dim_customer
+    description: >
+      dim_customer as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: dim_customer
+      generated: true
+
+  - name: support__dim_instrument
+    description: >
+      dim_instrument as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: dim_instrument
+      generated: true
+
+  - name: support__fct_account_daily
+    description: >
+      fct_account_daily as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: fct_account_daily
+      generated: true
+
+  - name: support__fct_executions
+    description: >
+      fct_executions as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: fct_executions
+      generated: true
+
+  - name: support__fct_orders
+    description: >
+      fct_orders as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: fct_orders
+      generated: true
+
+  - name: support__fct_positions_daily
+    description: >
+      fct_positions_daily as seen by the `support` role (clearance: confidential). Masking applied per
+      governance/policy.yml. Generated -- do not edit by hand.
+    meta:
+      layer: "40_secure"
+      role: support
+      source_model: fct_positions_daily
+      generated: true

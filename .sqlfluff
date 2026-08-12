@@ -1,0 +1,64 @@
+# SQL style for the dbt project.
+#
+# The dbt templater renders Jinja through dbt itself, so ref() and macro calls
+# are linted as the SQL they actually produce rather than being skipped.
+[sqlfluff]
+dialect = duckdb
+templater = dbt
+max_line_length = 90
+
+# An explicit allowlist rather than "everything minus exclusions".
+#
+# The rules below are the ones that catch real inconsistency: casing, aliasing
+# and comma placement. Running the full set instead means fighting rules that
+# cannot see the intent:
+#
+#   CV03  demands a trailing comma after `SELECT *`, which is not a column list
+#   LT02  argues about continuation-line depth inside QUALIFY and CASE
+#   ST06  wants SELECT columns alphabetised, destroying the deliberate
+#         keys-then-dimensions-then-measures grouping
+#   ST05  objects to CTEs, which this project uses throughout on purpose
+#   RF02  wants every column qualified, including in single-table SELECTs
+#
+# A linter configured to argue with the house style trains everyone to run it
+# with `--force`, which is worse than not running it.
+rules = capitalisation.keywords,capitalisation.literals,capitalisation.functions,capitalisation.types,capitalisation.identifiers,aliasing.table,aliasing.column,aliasing.unique.table,layout.commas,layout.spacing,ambiguous.distinct,ambiguous.union,convention.not_equal,convention.coalesce
+
+# Generated files are not hand-written and are verified by
+# `generate_secure_views.py --check` instead.
+exclude_rules = none
+
+[sqlfluff:templater:dbt]
+project_dir = warehouse
+profiles_dir = warehouse
+
+[sqlfluff:indentation]
+indent_unit = space
+tab_space_size = 2
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = upper
+
+[sqlfluff:rules:capitalisation.literals]
+capitalisation_policy = upper
+
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = upper
+
+[sqlfluff:rules:capitalisation.types]
+extended_capitalisation_policy = upper
+
+[sqlfluff:rules:capitalisation.identifiers]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:aliasing.table]
+aliasing = explicit
+
+[sqlfluff:rules:aliasing.column]
+aliasing = explicit
+
+[sqlfluff:rules:convention.select_trailing_comma]
+select_clause_trailing_comma = require
+
+[sqlfluff:rules:layout.commas]
+comma_style = trailing

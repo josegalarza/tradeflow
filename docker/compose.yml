@@ -1,0 +1,64 @@
+# The whole stack: build the warehouse once, then serve the dashboard and the
+# orchestration UI against it.
+#
+#   docker compose -f docker/compose.yml up --build
+#
+#   dashboard  http://localhost:8050
+#   dagster    http://localhost:3000
+#
+# One image serves all three roles (see docker/entrypoint.sh) rather than three
+# near-identical images. The data volume is shared, and DuckDB is single-writer --
+# which is why `build` runs to completion and exits before the read-only services
+# start, rather than all three racing for the file.
+
+name: tradeflow
+
+x-image: &image
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: tradeflow:local
+  environment:
+    TRADEFLOW_SCALE: ${TRADEFLOW_SCALE:-small}
+    TRADEFLOW_SEED: ${TRADEFLOW_SEED:-42}
+    # Optional. Unset, notifications render to stdout instead of failing.
+    SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+  volumes:
+    - warehouse-data:/app/data
+
+services:
+  build:
+    <<: *image
+    command: ["build"]
+    # Exits on success. The services below wait for that, so nothing tries to read
+    # a warehouse that does not exist yet.
+    restart: "no"
+
+  dashboard:
+    <<: *image
+    command: ["dash"]
+    ports:
+      - "8050:8050"
+    depends_on:
+      build:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8050/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  dagster:
+    <<: *image
+    command: ["dagster"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      build:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  warehouse-data:

@@ -1,0 +1,16 @@
+# Core warehouse + ingestion. Everything needed for `make build`.
+# Deliberately split from orchestration/dashboard so CI jobs install only
+# what they use — the dbt job does not need Dagster or Dash.
+# Pinned to 1.11 rather than 1.12 because dagster-dbt requires dbt-core<1.12,
+# and the per-model asset graph it provides is the entire reason this project
+# uses Dagster -- shelling out to `dbt build` from a single opaque asset would
+# give up the lineage, the asset checks and the selective materialisation.
+# One environment, one dbt version. Revisit when dagster-dbt supports 1.12.
+dbt-core~=1.11.0
+dbt-duckdb~=1.11.0
+duckdb~=1.4.0
+pandas~=2.3.0
+pyarrow~=21.0
+numpy~=2.3.0
+Faker~=37.0
+PyYAML~=6.0

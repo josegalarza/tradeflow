@@ -1,0 +1,321 @@
+version: 2
+
+# ---------------------------------------------------------------------------- #
+# The intermediate layer is the engineering layer: business logic, joins, and the
+# quarantine boundary. Nobody outside the data team should query it, and no
+# secure views are generated over it (see governance/policy.yml).
+#
+# It is documented anyway. "Internal" is not the same as "unexplained" -- these
+# are the models someone debugging a wrong number in a mart will land in, and an
+# undocumented layer is where a warehouse stops being maintainable by anyone
+# except its author.
+#
+# int_customer_versions carries the full PII surface forward from staging, so its
+# columns are tagged in full. The others carry keys and measures only.
+# ---------------------------------------------------------------------------- #
+
+models:
+  - name: int_orders_screened
+    description: >
+      Every order with a data quality verdict attached: `is_valid`, plus the
+      full list of reasons it failed. The quarantine boundary -- nothing is
+      deleted, so a drop in row counts is always explainable.
+
+      Grain: one row per row in stg_orders (not deduplicated by design).
+    meta:
+      layer: "20_intermediate"
+      grain: "one row per stg_orders row"
+      owner: "data-platform"
+    columns:
+      - name: order_id
+        description: >
+          Order identifier. NOT unique here: a duplicated order is one of the
+          defects this model exists to detect, so deduplicating would defeat it.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: is_valid
+        description: True when the order passed every screen.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: dq_reject_reasons
+        description: >
+          List of every failed check. A list rather than a single value because
+          an order can be both an orphan and negative, and a triage queue that
+          shows one defect per pass costs a day per defect.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: dq_reject_reason
+        description: >
+          First reason, for grouping in charts where a list column is awkward.
+          NULL for valid rows.
+        meta: { classification: internal }
+
+  - name: int_executions_screened
+    description: >
+      Every fill with a data quality verdict, including a cumulative fill
+      quantity used to detect over-fills one fill at a time rather than
+      condemning the whole order.
+
+      Grain: one row per row in stg_executions.
+    meta:
+      layer: "20_intermediate"
+      grain: "one row per stg_executions row"
+      owner: "data-platform"
+    columns:
+      - name: execution_id
+        description: >
+          Fill identifier. NOT unique here -- duplicate fills are a detected
+          defect, not noise to be silently collapsed.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: cumulative_filled_quantity
+        description: >
+          Running total of filled quantity for the parent order, ordered by
+          execution time. Compared against the order quantity to flag only the
+          fills that push it over.
+        meta: { classification: internal }
+      - name: is_valid
+        description: True when the fill passed every screen.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: dq_reject_reasons
+        description: Every failed check for this fill.
+        data_tests: [not_null]
+        meta: { classification: internal }
+
+  - name: int_executions_priced
+    description: >
+      Valid fills, converted to the reporting currency and joined to their
+      trading context. The single place FX conversion and the buy/sell sign
+      convention are applied -- every downstream model consumes the converted,
+      signed measures rather than deriving its own.
+
+      Grain: one row per valid execution_id.
+    meta:
+      layer: "20_intermediate"
+      grain: "one row per valid execution_id"
+      owner: "data-platform"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [execution_id]
+    columns:
+      - name: execution_id
+        description: Primary key. Unique here, unlike upstream.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: signed_quantity
+        description: Positive for buys, negative for sells.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: signed_cash_flow_reporting
+        description: >
+          Cash effect in the reporting currency, commission included. Negative
+          for buys, positive for sells.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: fx_rate_to_reporting
+        description: >
+          Rate used for conversion. Joined INNER, so a missing rate fails the
+          build rather than silently becoming a NULL that SUMs to zero.
+        data_tests: [not_null]
+        meta: { classification: internal }
+
+  - name: int_order_fills
+    description: >
+      Fill summary per order: quantity delivered, volume-weighted average price,
+      and milestone timestamps. Volume-weighted rather than a mean of prices --
+      averaging the price column weights a one-share fill equally with a
+      thousand-share fill.
+
+      Grain: one row per order that has at least one valid fill.
+    meta:
+      layer: "20_intermediate"
+      grain: "one row per order_id with at least one valid fill"
+      owner: "data-platform"
+    columns:
+      - name: order_id
+        description: Primary key.
+        data_tests: [not_null, unique]
+        meta: { classification: internal }
+      - name: average_fill_price
+        description: Volume-weighted average price across the order's fills.
+        meta: { classification: internal }
+      - name: primary_venue
+        description: Venue that took the largest share of the order by quantity.
+        meta: { classification: internal }
+
+  - name: int_position_movements
+    description: >
+      Net daily change in holdings and cash per account and instrument.
+      Collapsing fills to one row per day before the running balance is what
+      makes fct_positions_daily affordable.
+
+      Grain: one row per account, instrument and activity date.
+    meta:
+      layer: "20_intermediate"
+      grain: "one row per account_id, instrument_id, activity_date"
+      owner: "data-platform"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [account_id, instrument_id, activity_date]
+    columns:
+      - name: net_quantity_change
+        description: Signed change in units held on this day.
+        data_tests: [not_null]
+        meta: { classification: internal }
+
+  - name: int_customer_versions
+    description: >
+      Type 2 history reconstructed from the periodic customer extracts. Hashes
+      the tracked attributes, keeps only the extracts where the hash changed,
+      and closes each version the day before the next opens.
+
+      Grain: one row per customer per version.
+
+      Carries the complete PII surface, which is why every column here is
+      classified even though the intermediate layer is otherwise summarised.
+    meta:
+      layer: "20_intermediate"
+      grain: "one row per customer_id per version"
+      owner: "data-platform"
+      contains_pii: true
+    columns:
+      - name: customer_id
+        description: Natural key, stable across versions.
+        data_tests: [not_null]
+        meta:
+          classification: internal
+          pii: true
+          pii_type: pseudonymous_id
+          masking: none
+      - name: version_number
+        description: 1-based version sequence within the customer.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: valid_from
+        description: First date this version applied. Inclusive.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: valid_to
+        description: Last date this version applied. Inclusive.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: is_current
+        description: True for the version in force now.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: observed_at_extract_date
+        description: Extract this version was first observed in. Provenance.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: attribute_hash
+        description: >
+          Hash of the tracked attributes. The change-detection mechanism -- adding
+          a tracked attribute is a one-line change here rather than a fourteen
+          clause boolean.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: first_name
+        description: Given name as at this version.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: last_name
+        description: Family name as at this version.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: full_name
+        description: Display name as at this version.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: name
+          masking: redact
+      - name: email
+        description: Contact email as at this version.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: email
+          masking: hash
+      - name: phone_number
+        description: Contact number as at this version.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: phone
+          masking: partial
+      - name: date_of_birth
+        description: Date of birth.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: date_of_birth
+          masking: generalize
+      - name: national_id
+        description: Government identifier.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: government_id
+          masking: redact
+      - name: street_address
+        description: Residential street address as at this version.
+        meta:
+          classification: restricted
+          pii: true
+          pii_type: address
+          masking: redact
+      - name: city
+        description: Residential city.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: address
+          masking: none
+      - name: postcode
+        description: Residential postcode.
+        meta:
+          classification: confidential
+          pii: true
+          pii_type: address
+          masking: generalize
+      - name: country_code
+        description: ISO 3166-1 alpha-2 country of residence.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: kyc_status
+        description: KYC state as at this version.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: risk_rating
+        description: Compliance risk band as at this version.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: customer_tier
+        description: Commercial tier as at this version.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: marketing_opt_in
+        description: Marketing consent as at this version.
+        data_tests: [not_null]
+        meta: { classification: confidential }
+      - name: created_at
+        description: Customer record creation timestamp.
+        data_tests: [not_null]
+        meta: { classification: internal }
+      - name: updated_at
+        description: Most recent source change as at this version.
+        meta: { classification: internal }
+      - name: previous_attribute_hash
+        description: >
+          Prior version's hash. Retained so it is possible to see *why* a version
+          boundary exists when investigating an unexpected version count.
+        meta: { classification: internal }

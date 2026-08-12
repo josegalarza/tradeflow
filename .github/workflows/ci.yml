@@ -1,0 +1,225 @@
+name: ci
+
+# Every check here is a target in the Makefile, so `make ci` locally runs what CI
+# runs. A green CI badge is only worth something if it checks the same thing a
+# developer can check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  # `tiny` keeps the whole pipeline under a minute on a hosted runner. The scale
+  # presets exist so the same code paths run at 15k rows here and 67M locally --
+  # CI checks correctness, not capacity.
+  SCALE: tiny
+
+jobs:
+  lint:
+    name: lint (python + sql)
+    runs-on: ubuntu-latest
+    env:
+      DBT_PROFILES_DIR: ${{ github.workspace }}/warehouse
+      TRADEFLOW_LANDING_PATH: ${{ github.workspace }}/data/landing
+      # SQLFluff's dbt templater opens a dbt connection to resolve macros, so the
+      # path has to be set even though no query runs against it.
+      TRADEFLOW_DUCKDB: ${{ github.workspace }}/data/lint.duckdb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements/dev.txt
+
+      - name: Ruff lint
+        run: ruff check ingestion governance dashboard orchestration tests scripts
+
+      - name: Ruff format
+        run: ruff format --check ingestion governance dashboard orchestration tests scripts
+
+      # SQLFluff resolves ref() and macros through dbt, so the packages have to be
+      # present. It runs in its own job so a style failure is reported separately
+      # from a modelling failure.
+      - name: dbt deps
+        run: cd warehouse && dbt deps
+
+      - name: SQLFluff
+        run: sqlfluff lint warehouse/models warehouse/tests
+
+  test:
+    name: python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements/dev.txt
+
+      - name: pytest
+        run: pytest tests -q
+
+  build:
+    name: warehouse + governance
+    runs-on: ubuntu-latest
+    env:
+      DBT_PROFILES_DIR: ${{ github.workspace }}/warehouse
+      TRADEFLOW_LANDING_PATH: ${{ github.workspace }}/data/landing
+      TRADEFLOW_DUCKDB: ${{ github.workspace }}/data/tradeflow.duckdb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements/dev.txt
+          cd warehouse && dbt deps
+
+      - name: Generate the landing zone
+        run: python -m ingestion.generate --scale "$SCALE" --seed 42
+
+      # Unit tests first: they need no warehouse and they fail fastest, so a
+      # broken transform is reported before spending a minute building.
+      - name: dbt unit tests
+        run: cd warehouse && dbt test --select "test_type:unit"
+
+      - name: dbt build
+        run: cd warehouse && dbt build --full-refresh
+
+      - name: Source freshness
+        run: cd warehouse && dbt source freshness
+
+      - name: Build dbt artefacts for the governance tools
+        run: cd warehouse && dbt docs generate --no-compile
+
+      # The gate. An untagged column, an under-classified one, or a layer
+      # violation fails the build here.
+      - name: Classification coverage gate
+        run: python -m governance.check_classification
+
+      - name: Layer boundary check
+        run: python -m governance.check_layer_boundaries
+
+      # Proves the committed secure views still match the policy. Without this,
+      # a column added to a mart could stay unmasked in a role's view.
+      - name: Secure views are up to date
+        run: python -m governance.generate_secure_views --check --diff
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Warehouse build"
+            echo
+            echo '```'
+            python -m governance.check_classification || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload dbt artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-artifacts
+          path: |
+            warehouse/target/manifest.json
+            warehouse/target/run_results.json
+            warehouse/target/catalog.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  anomalies:
+    name: quality gate fires on bad data
+    runs-on: ubuntu-latest
+    # The most important job in this file. It asserts that the data quality
+    # framework actually catches something: a suite that has never failed is
+    # indistinguishable from one that cannot fail.
+    env:
+      DBT_PROFILES_DIR: ${{ github.workspace }}/warehouse
+      TRADEFLOW_LANDING_PATH: ${{ github.workspace }}/data/landing
+      TRADEFLOW_DUCKDB: ${{ github.workspace }}/data/tradeflow.duckdb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+
+      - name: Install
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements/dev.txt
+          cd warehouse && dbt deps
+
+      - name: Generate data with defects planted
+        run: |
+          python -m ingestion.generate --scale "$SCALE" --seed 42 --inject-anomalies
+
+      - name: Build must fail on the quality gate
+        run: |
+          set +e
+          cd warehouse && dbt build --full-refresh
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::dbt build SUCCEEDED on deliberately corrupted data."
+            echo "The quality gate did not fire. Either the anomaly injection or"
+            echo "assert_reject_rate_within_threshold has stopped working."
+            exit 1
+          fi
+          echo "Build failed as expected on corrupted data (exit $status)."
+
+      # And the other half of the claim: the pipeline degraded rather than
+      # stopping. Every model still built, and the quarantine recorded why.
+      - name: Marts still built, quarantine populated
+        run: |
+          python - <<'PY'
+          import os, duckdb, sys
+          con = duckdb.connect(os.environ["TRADEFLOW_DUCKDB"], read_only=True)
+          marts = con.execute("""
+              SELECT count(*) FROM duckdb_tables() WHERE schema_name = 'marts'
+          """).fetchone()[0]
+          rejected, reasons = con.execute("""
+              SELECT sum(rejected_rows), count(DISTINCT reject_reason)
+              FROM marts.agg_data_quality WHERE reject_reason <> 'none'
+          """).fetchone()
+          print(f"marts tables: {marts}")
+          print(f"quarantined rows: {rejected} across {reasons} reason codes")
+          failed = False
+          if marts < 10:
+              print("::error::marts did not all build -- the quarantine failed to absorb the defects")
+              failed = True
+          if not rejected or reasons < 4:
+              print("::error::quarantine is empty or nearly so; screening is not working")
+              failed = True
+          sys.exit(1 if failed else 0)
+          PY

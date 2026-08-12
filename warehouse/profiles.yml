@@ -1,0 +1,31 @@
+# Checked in deliberately: there is nothing secret here. The warehouse is a
+# local DuckDB file, which is the whole point -- a reviewer can clone this repo
+# and build it without an account, a credential or a bill.
+#
+# `dev` and `ci` differ only in threads and in where the database lives, so a
+# green CI run is genuine evidence that a local build works.
+tradeflow:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('TRADEFLOW_DUCKDB', '../data/tradeflow.duckdb') }}"
+      threads: 8
+      # Kept out of the repo but pinned so `dbt docs` and the dashboard agree.
+      extensions:
+        - httpfs
+        - parquet
+      settings:
+        # Timestamps in the landing zone are UTC and must stay that way; a
+        # local session timezone would silently shift every date partition.
+        TimeZone: "UTC"
+
+    ci:
+      type: duckdb
+      path: "{{ env_var('TRADEFLOW_DUCKDB', 'target/ci.duckdb') }}"
+      # GitHub's hosted runners give two usable cores.
+      threads: 4
+      extensions:
+        - parquet
+      settings:
+        TimeZone: "UTC"

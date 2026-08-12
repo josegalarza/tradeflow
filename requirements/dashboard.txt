@@ -1,0 +1,8 @@
+-r base.txt
+
+# Dash for the interactive app, plotly for the figures. dash-bootstrap-components
+# supplies the layout primitives so the app is a dashboard rather than a stack of
+# unstyled divs.
+dash~=3.0
+plotly~=6.0
+dash-bootstrap-components~=2.0

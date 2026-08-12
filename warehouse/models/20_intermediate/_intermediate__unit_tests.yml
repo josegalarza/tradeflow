@@ -1,0 +1,309 @@
+version: 2
+
+# ---------------------------------------------------------------------------- #
+# dbt unit tests: fixed inputs, asserted outputs, no warehouse scan.
+#
+# These cover the two pieces of SQL in this project most likely to be subtly
+# wrong -- SCD2 boundary construction and the cumulative over-fill screen. Both
+# involve window functions whose failure mode is an off-by-one that produces
+# plausible numbers, which no amount of row-count checking will catch.
+#
+# The difference from the data tests: a data test tells you the current data
+# satisfies an invariant. A unit test tells you the *logic* is right, including
+# for the edge cases the current data happens not to contain. Run them with
+# `make unit-test`; they need no build.
+# ---------------------------------------------------------------------------- #
+
+unit_tests:
+  - name: scd2_collapses_unchanged_extracts
+    description: >
+      Three monthly extracts with identical attributes must produce ONE version,
+      not three. Without change detection the dimension grows by a row per
+      customer per month forever, and every as-of join fans out.
+    model: int_customer_versions
+    given:
+      - input: ref('stg_customer_extracts')
+        rows:
+          - customer_id: "CUS-001"
+            extract_date: "2026-01-31"
+            first_name: "Ada"
+            last_name: "Lovelace"
+            full_name: "Ada Lovelace"
+            email: "ada@example.com"
+            phone_number: "+61 400 000 001"
+            date_of_birth: "1990-05-01"
+            national_id: "111-11-1111"
+            street_address: "1 Analytical Way"
+            city: "Melbourne"
+            postcode: "3000"
+            country_code: "AU"
+            kyc_status: "verified"
+            risk_rating: "low"
+            customer_tier: "bronze"
+            marketing_opt_in: true
+            created_at: "2026-01-05 09:00:00"
+            updated_at: "2026-01-05 09:00:00"
+          - customer_id: "CUS-001"
+            extract_date: "2026-02-28"
+            first_name: "Ada"
+            last_name: "Lovelace"
+            full_name: "Ada Lovelace"
+            email: "ada@example.com"
+            phone_number: "+61 400 000 001"
+            date_of_birth: "1990-05-01"
+            national_id: "111-11-1111"
+            street_address: "1 Analytical Way"
+            city: "Melbourne"
+            postcode: "3000"
+            country_code: "AU"
+            kyc_status: "verified"
+            risk_rating: "low"
+            customer_tier: "bronze"
+            marketing_opt_in: true
+            created_at: "2026-01-05 09:00:00"
+            updated_at: "2026-01-05 09:00:00"
+          - customer_id: "CUS-001"
+            extract_date: "2026-03-31"
+            first_name: "Ada"
+            last_name: "Lovelace"
+            full_name: "Ada Lovelace"
+            email: "ada@example.com"
+            phone_number: "+61 400 000 001"
+            date_of_birth: "1990-05-01"
+            national_id: "111-11-1111"
+            street_address: "1 Analytical Way"
+            city: "Melbourne"
+            postcode: "3000"
+            country_code: "AU"
+            kyc_status: "verified"
+            risk_rating: "low"
+            customer_tier: "bronze"
+            marketing_opt_in: true
+            created_at: "2026-01-05 09:00:00"
+            updated_at: "2026-01-05 09:00:00"
+    expect:
+      rows:
+        # valid_from is created_at, NOT the first extract date: the customer
+        # existed from 5 January, and dating version 1 from 31 January would leave
+        # a 26-day hole that every as-of join silently drops.
+        - customer_id: "CUS-001"
+          version_number: 1
+          valid_from: "2026-01-05"
+          valid_to: "9999-12-31"
+          is_current: true
+
+  - name: scd2_opens_a_new_version_when_an_attribute_changes
+    description: >
+      A risk rating change mid-history must close version 1 the day before
+      version 2 opens, and leave exactly one current version. This is the
+      inclusive-bounds convention the mutually-exclusive-ranges check enforces.
+    model: int_customer_versions
+    given:
+      - input: ref('stg_customer_extracts')
+        rows:
+          - customer_id: "CUS-002"
+            extract_date: "2026-01-31"
+            first_name: "Grace"
+            last_name: "Hopper"
+            full_name: "Grace Hopper"
+            email: "grace@example.com"
+            phone_number: "+1 555 000 002"
+            date_of_birth: "1988-12-09"
+            national_id: "222-22-2222"
+            street_address: "2 Compiler Street"
+            city: "Sydney"
+            postcode: "2000"
+            country_code: "US"
+            kyc_status: "verified"
+            risk_rating: "low"
+            customer_tier: "silver"
+            marketing_opt_in: false
+            created_at: "2026-01-10 12:00:00"
+            updated_at: "2026-01-10 12:00:00"
+          - customer_id: "CUS-002"
+            extract_date: "2026-02-28"
+            first_name: "Grace"
+            last_name: "Hopper"
+            full_name: "Grace Hopper"
+            email: "grace@example.com"
+            phone_number: "+1 555 000 002"
+            date_of_birth: "1988-12-09"
+            national_id: "222-22-2222"
+            street_address: "2 Compiler Street"
+            city: "Sydney"
+            postcode: "2000"
+            country_code: "US"
+            # The only change.
+            kyc_status: "verified"
+            risk_rating: "high"
+            customer_tier: "silver"
+            marketing_opt_in: false
+            created_at: "2026-01-10 12:00:00"
+            updated_at: "2026-02-20 08:30:00"
+    expect:
+      rows:
+        - customer_id: "CUS-002"
+          version_number: 1
+          valid_from: "2026-01-10"
+          # Closes the day before version 2 opens. Inclusive bounds, so that
+          # `BETWEEN valid_from AND valid_to` -- what an analyst actually writes --
+          # is correct.
+          valid_to: "2026-02-27"
+          is_current: false
+          risk_rating: "low"
+        - customer_id: "CUS-002"
+          version_number: 2
+          valid_from: "2026-02-28"
+          valid_to: "9999-12-31"
+          is_current: true
+          risk_rating: "high"
+
+  - name: scd2_tracks_pii_changes_not_just_status_changes
+    description: >
+      An email change must open a new version. PII values are versioned too --
+      otherwise a subject-access request cannot answer "what address did you hold
+      for me in March", and the masked views would show only the latest value
+      against historical facts.
+    model: int_customer_versions
+    given:
+      - input: ref('stg_customer_extracts')
+        rows:
+          - customer_id: "CUS-003"
+            extract_date: "2026-01-31"
+            first_name: "Alan"
+            last_name: "Turing"
+            full_name: "Alan Turing"
+            email: "alan@example.com"
+            phone_number: "+44 7000 000003"
+            date_of_birth: "1992-06-23"
+            national_id: "AB 12 34 56 C"
+            street_address: "3 Enigma Road"
+            city: "London"
+            postcode: "EC1A 1BB"
+            country_code: "GB"
+            kyc_status: "verified"
+            risk_rating: "medium"
+            customer_tier: "gold"
+            marketing_opt_in: true
+            created_at: "2026-01-02 07:00:00"
+            updated_at: "2026-01-02 07:00:00"
+          - customer_id: "CUS-003"
+            extract_date: "2026-02-28"
+            first_name: "Alan"
+            last_name: "Turing"
+            full_name: "Alan Turing"
+            email: "alan.turing@example.net"
+            phone_number: "+44 7000 000003"
+            date_of_birth: "1992-06-23"
+            national_id: "AB 12 34 56 C"
+            street_address: "3 Enigma Road"
+            city: "London"
+            postcode: "EC1A 1BB"
+            country_code: "GB"
+            kyc_status: "verified"
+            risk_rating: "medium"
+            customer_tier: "gold"
+            marketing_opt_in: true
+            created_at: "2026-01-02 07:00:00"
+            updated_at: "2026-02-14 10:00:00"
+    expect:
+      rows:
+        - customer_id: "CUS-003"
+          version_number: 1
+          email: "alan@example.com"
+          is_current: false
+        - customer_id: "CUS-003"
+          version_number: 2
+          email: "alan.turing@example.net"
+          is_current: true
+
+  - name: over_fill_screen_rejects_only_the_excess_fills
+    description: >
+      An order for 100 units that receives fills of 60, 40 and 30 is over-filled
+      by the third fill only. The first two are legitimate and must survive.
+
+      Condemning the whole order would discard 100 units of real fills and
+      understate the customer's position -- a worse outcome than the defect being
+      corrected. This is why the check is cumulative rather than aggregate.
+    model: int_executions_screened
+    given:
+      - input: ref('stg_executions')
+        rows:
+          - execution_id: "EXE-001"
+            order_id: "ORD-001"
+            venue: "IEX"
+            execution_quantity: 60
+            execution_price: 10.0
+            execution_currency: "USD"
+            commission: 0
+            gross_notional: 600
+            executed_at: "2026-03-02 10:00:00"
+            executed_date: "2026-03-02"
+          - execution_id: "EXE-002"
+            order_id: "ORD-001"
+            venue: "IEX"
+            execution_quantity: 40
+            execution_price: 10.0
+            execution_currency: "USD"
+            commission: 0
+            gross_notional: 400
+            executed_at: "2026-03-02 10:05:00"
+            executed_date: "2026-03-02"
+          - execution_id: "EXE-003"
+            order_id: "ORD-001"
+            venue: "IEX"
+            execution_quantity: 30
+            execution_price: 10.0
+            execution_currency: "USD"
+            commission: 0
+            gross_notional: 300
+            executed_at: "2026-03-02 10:09:00"
+            executed_date: "2026-03-02"
+      - input: ref('int_orders_screened')
+        rows:
+          - order_id: "ORD-001"
+            order_quantity: 100
+            order_status: "filled"
+            placed_at: "2026-03-02 09:45:00"
+            is_valid: true
+    expect:
+      rows:
+        - execution_id: "EXE-001"
+          cumulative_filled_quantity: 60
+          is_valid: true
+          dq_reject_reason: null
+        - execution_id: "EXE-002"
+          cumulative_filled_quantity: 100
+          is_valid: true
+          dq_reject_reason: null
+        - execution_id: "EXE-003"
+          cumulative_filled_quantity: 130
+          is_valid: false
+          dq_reject_reason: "over_filled_order"
+
+  - name: fill_against_a_missing_order_is_an_orphan
+    description: >
+      A fill whose parent order was itself quarantined must be rejected as an
+      orphan rather than silently joined to nothing. Defects cascade, and the
+      cascade has to be visible.
+    model: int_executions_screened
+    given:
+      - input: ref('stg_executions')
+        rows:
+          - execution_id: "EXE-010"
+            order_id: "ORD-MISSING"
+            venue: "IEX"
+            execution_quantity: 5
+            execution_price: 10.0
+            execution_currency: "USD"
+            commission: 0
+            gross_notional: 50
+            executed_at: "2026-03-02 10:00:00"
+            executed_date: "2026-03-02"
+      - input: ref('int_orders_screened')
+        rows: []
+    expect:
+      rows:
+        - execution_id: "EXE-010"
+          is_valid: false
+          dq_reject_reason: "orphan_order"

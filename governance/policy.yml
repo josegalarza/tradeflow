@@ -1,0 +1,249 @@
+# ---------------------------------------------------------------------------- #
+# Data classification and access policy.
+#
+# This file plus the `meta.classification` / `meta.masking` tags in the dbt
+# schema YAML are the entire governance configuration. Three tools consume them,
+# and none of them contains a hardcoded column name:
+#
+#   governance/check_classification.py     -- CI gate: fails on untagged columns
+#   governance/generate_secure_views.py    -- emits the models/40_secure views
+#   governance/build_catalog.py            -- renders docs/catalog.md
+#
+# WHAT THIS IS NOT
+#
+# DuckDB has no native row-level security, dynamic data masking, or policy tags.
+# This framework enforces policy at the *modelling* layer: it generates a
+# separate view per role with the masking already applied, and the intended
+# deployment is that each role is granted its own schema and nothing else.
+#
+# That is a real control in a warehouse where access is mediated by schema
+# grants, and it is not the same thing as engine-enforced masking -- a role with
+# direct access to `marts` bypasses it entirely. The same tags would drive
+# Snowflake masking policies or BigQuery policy tags, where the engine does the
+# enforcing. Being precise about that boundary matters more than the demo
+# looking impressive.
+# ---------------------------------------------------------------------------- #
+
+# Sensitivity levels, lowest to highest. `rank` is what the generator compares.
+classifications:
+  public:
+    rank: 0
+    description: >
+      Non-sensitive reference data. Instrument names, sectors, market prices.
+      Could be published without consequence.
+  internal:
+    rank: 1
+    description: >
+      Ordinary business data. Order flow, surrogate keys, counts, dates.
+      Restricted to employees, but no individual is identifiable from it alone.
+  confidential:
+    rank: 2
+    description: >
+      Commercially or personally sensitive. Account balances, positions, risk
+      ratings, names, behavioural timestamps. Real harm from disclosure.
+  restricted:
+    rank: 3
+    description: >
+      Directly identifying or regulated. Email, phone, date of birth, national
+      ID, street address, raw IP. Disclosure is a reportable incident.
+
+# Masking strategies. The SQL for each lives in warehouse/macros/masking.sql, so
+# the transformation is defined once and unit-tested rather than repeated per
+# generated view.
+masking_strategies:
+  none:
+    description: >
+      Explicit exemption: the column sits above the role's clearance but is
+      passed through unmasked anyway. Used where the analytical value is high
+      and the re-identification risk is low on its own -- `city`, for example.
+      An exemption, recorded as a decision rather than an omission.
+  hash:
+    description: >
+      Salted MD5. Destroys the value, preserves equality -- so distinct counts
+      and joins across systems still work. The right choice for identifiers
+      analysts need to group by but never need to read.
+  partial:
+    description: >
+      Reveals enough to confirm, not enough to contact. `j***@example.com`,
+      `+61 *** *** 789`. Exists for support staff verifying a caller's identity.
+  redact:
+    description: >
+      Replaced with a typed NULL. For columns with no analytical use below full
+      clearance: national ID, street address, raw IP.
+  generalize:
+    description: >
+      Reduced in precision until it stops identifying. Date of birth becomes a
+      decade band, postcode drops its last two characters, a precise timestamp
+      becomes a month. Keeps the distribution, loses the individual.
+  tokenize:
+    description: >
+      Reversible pseudonym via a lookup table. Declared for completeness and
+      NOT implemented -- a token vault is real infrastructure with its own
+      access controls and key rotation, and a fake one would misrepresent the
+      control. Using it raises an error rather than silently hashing.
+
+# ---------------------------------------------------------------------------- #
+# Roles. Each gets a generated schema of views over the marts.
+#
+# Resolution rule, per column:
+#   1. classification rank <= role clearance rank  -> pass through unmasked
+#   2. role override for that column name           -> apply the override
+#   3. column's declared `masking` strategy         -> apply it
+#   4. nothing declared                             -> redact
+#
+# Step 4 is the important one. An untagged sensitive column defaults to the most
+# restrictive outcome, not the most permissive: a governance framework that
+# fails open is worse than none at all, because it is trusted. The CI gate means
+# it should never trigger, and it is there for the day the gate is bypassed.
+# ---------------------------------------------------------------------------- #
+roles:
+  auditor:
+    schema: secure_auditor
+    clearance: restricted
+    description: >
+      Compliance and internal audit. Sees everything unmasked -- this role
+      exists so that a legitimate regulatory request never requires someone to
+      be granted access to `marts` directly, which is how temporary exceptions
+      become permanent.
+    overrides: {}
+
+  support:
+    schema: secure_support
+    clearance: confidential
+    description: >
+      Customer support. Needs to verify who is on the phone and see their
+      account state, and needs neither their national ID nor their full contact
+      details to do it.
+    overrides:
+      email: partial
+      phone_number: partial
+
+  analyst:
+    schema: secure_analyst
+    clearance: internal
+    description: >
+      The default role, and the one most queries should run as. Full access to
+      behaviour, balances and order flow; identity is hashed so cohorts and
+      distinct counts still work.
+    overrides:
+      # Balances and positions are the analyst's job. Confidential financial
+      # measures are exempted explicitly rather than by lowering the whole
+      # role's clearance, which would also expose names.
+      cash_balance_reporting: none
+      account_equity_reporting: none
+      holdings_value_reporting: none
+      net_funded_reporting: none
+      market_value_reporting: none
+      net_invested_reporting: none
+      unrealised_gain_reporting: none
+      realised_gain_reporting: none
+      total_gain_reporting: none
+      return_on_funded: none
+      lifetime_traded_notional_reporting: none
+      lifetime_commission_reporting: none
+      mean_fill_notional_reporting: none
+      amount: none
+      absolute_amount: none
+      margin_limit: none
+      risk_rating: none
+      kyc_status: none
+      marketing_opt_in: none
+      payment_method: none
+
+  marketing:
+    schema: secure_marketing
+    clearance: internal
+    # Columns above clearance are omitted from the view entirely rather than
+    # masked. A masked column still tells you it exists and invites someone to
+    # ask for access to the real thing; for this role the answer is that the
+    # data is not part of their job.
+    drop_above_clearance: true
+    description: >
+      Campaign and lifecycle marketing. Segments, tiers, cohorts and engagement
+      only. Cannot see balances, positions, contact details or compliance
+      state -- and cannot see that it is missing.
+    overrides:
+      # Consent state is the one confidential column marketing must have: acting
+      # on a stale opt-in is the actual compliance failure this role can cause.
+      marketing_opt_in: none
+
+# ---------------------------------------------------------------------------- #
+# Which models get secure views generated over them.
+#
+# Marts only. Staging and intermediate are the engineering layer -- nobody but
+# the data team should have access to either, masked or otherwise, and
+# generating role views over them would imply otherwise.
+# ---------------------------------------------------------------------------- #
+secure_view_scope:
+  include_layers:
+    - "30_marts"
+  # dim_date has no sensitive columns and no PII; a per-role copy of a calendar
+  # is noise in the DAG.
+  exclude_models:
+    - dim_date
+
+# ---------------------------------------------------------------------------- #
+# Rules for check_classification.py.
+# ---------------------------------------------------------------------------- #
+enforcement:
+  # Columns beginning with this prefix are warehouse technical metadata
+  # (_ingested_at, _dbt_invocation_id) and are classified `internal`
+  # automatically. Stated here rather than repeated on 40 column definitions.
+  technical_column_prefix: "_"
+  technical_column_classification: internal
+
+  # Layers where every single column must carry an explicit classification.
+  require_full_coverage_in_layers:
+    - "10_staging"
+
+  # Outside those layers, only models marked `contains_pii: true` need full
+  # column coverage. Everything else inherits the layer default below.
+  #
+  # The reasoning: staging is the boundary where the complete source shape is
+  # visible and where a new untagged column first appears, so it must be total.
+  # Marts are overwhelmingly derived arithmetic -- counts, sums, rates - and
+  # demanding a tag on each of 200 of them would make the tags too tedious to
+  # keep accurate. That is how governance frameworks actually fail: not by being
+  # bypassed, but by becoming a formality nobody trusts.
+  require_full_coverage_when_contains_pii: true
+  default_classification_by_layer:
+    "20_intermediate": internal
+    "30_marts": internal
+    "40_secure": internal
+
+  # Also fail if a column looks like personal data by name but carries a
+  # classification below this level. Catches the case where someone adds a
+  # column, tags it `internal` to get past the coverage check, and moves on.
+  minimum_classification_for_pii: confidential
+
+  # Escape hatch, with a price. Some columns legitimately sit below the minimum
+  # despite a suspicious name -- `ip_address_prefix` is a deliberately truncated
+  # /24 that exists precisely so analysts have a safe alternative to the raw
+  # address, and classifying it `confidential` would defeat its purpose.
+  #
+  # Such a column passes the gate only if it declares
+  # `meta.classification_rationale` with a written justification. Exceptions are
+  # allowed; undocumented exceptions are not. The rationale is rendered into
+  # docs/catalog.md, so every exemption is visible to whoever reviews the
+  # warehouse's posture rather than buried in a YAML file.
+  exemption_meta_key: classification_rationale
+  suspicious_column_patterns:
+    - "email"
+    - "phone"
+    - "mobile"
+    - "national_id"
+    - "tax_id"
+    - "ssn"
+    - "passport"
+    - "date_of_birth"
+    - "dob"
+    - "street"
+    - "address"
+    - "postcode"
+    - "zip"
+    - "ip_address"
+    - "user_agent"
+    - "full_name"
+    - "first_name"
+    - "last_name"
+    - "surname"
