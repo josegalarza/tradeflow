@@ -1,7 +1,7 @@
 version: 2
 
 # ---------------------------------------------------------------------------- #
-# dbt unit tests: fixed inputs, asserted outputs, no warehouse scan.
+# dbt unit tests: fixed inputs, asserted outputs.
 #
 # These cover the two pieces of SQL in this project most likely to be subtly
 # wrong -- SCD2 boundary construction and the cumulative over-fill screen. Both
@@ -10,8 +10,15 @@ version: 2
 #
 # The difference from the data tests: a data test tells you the current data
 # satisfies an invariant. A unit test tells you the *logic* is right, including
-# for the edge cases the current data happens not to contain. Run them with
-# `make unit-test`; they need no build.
+# for the edge cases the current data happens not to contain.
+#
+# THEY DO NOT READ ANY DATA, BUT THEY DO NEED THE WAREHOUSE TO EXIST. The fixture
+# rows replace the input entirely, so no source data is scanned -- but dbt
+# introspects each input relation to resolve its column types, so the upstream
+# models must already have been built. Running them before a build fails with
+# "Compilation Error in model stg_customer_extracts", which is not an obvious
+# description of the problem. `dbt build` runs them in dependency order, which is
+# the reliable way; `make unit-test` re-runs them on their own after a build.
 # ---------------------------------------------------------------------------- #
 
 unit_tests:

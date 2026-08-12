@@ -4,7 +4,7 @@
 > dbt manifest and `governance/policy.yml`. Run `make governance` to
 > refresh. Do not edit by hand.
 
-Generated 2026-08-12 16:14 UTC
+Generated 2026-08-12 16:30 UTC
 
 This catalog is produced from the same classification tags that generate
 the masked role views in `warehouse/models/40_secure/`. It therefore

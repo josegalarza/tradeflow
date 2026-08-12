@@ -105,7 +105,11 @@ test: ## Run dbt tests only
 	cd $(WAREHOUSE) && ../$(DBT) test $(DBT_SELECT)
 
 .PHONY: unit-test
-unit-test: ## Run dbt unit tests (no warehouse scan)
+unit-test: ## Run dbt unit tests (needs a prior build -- see below)
+	# Unit tests read no data: the fixture rows replace the input entirely. They
+	# do need the upstream relations to exist, because dbt introspects them to
+	# resolve column types -- so this target requires `make build` to have run.
+	# `dbt build` also runs them, in dependency order.
 	cd $(WAREHOUSE) && ../$(DBT) test --select "test_type:unit"
 
 .PHONY: freshness

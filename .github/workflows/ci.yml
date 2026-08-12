@@ -28,9 +28,11 @@ jobs:
     env:
       DBT_PROFILES_DIR: ${{ github.workspace }}/warehouse
       TRADEFLOW_LANDING_PATH: ${{ github.workspace }}/data/landing
-      # SQLFluff's dbt templater opens a dbt connection to resolve macros, so the
-      # path has to be set even though no query runs against it.
-      TRADEFLOW_DUCKDB: ${{ github.workspace }}/data/lint.duckdb
+      # SQLFluff's dbt templater opens a dbt connection to resolve macros, so a
+      # target has to be resolvable even though no query runs against it.
+      # In-memory rather than a file: a path under data/ requires the directory to
+      # exist, which it does not on a fresh checkout.
+      TRADEFLOW_DUCKDB: ":memory:"
     steps:
       - uses: actions/checkout@v4
 
@@ -105,12 +107,14 @@ jobs:
       - name: Generate the landing zone
         run: python -m ingestion.generate --scale "$SCALE" --seed 42
 
-      # Unit tests first: they need no warehouse and they fail fastest, so a
-      # broken transform is reported before spending a minute building.
-      - name: dbt unit tests
-        run: cd warehouse && dbt test --select "test_type:unit"
-
-      - name: dbt build
+      # `dbt build` runs the unit tests in dependency order along with everything
+      # else. They deliberately do NOT get their own step before this one: unit
+      # tests read no data, but dbt introspects each input relation to resolve its
+      # column types, so the upstream models must already exist. Running them first
+      # fails with "Compilation Error in model stg_customer_extracts", which CI
+      # found and a local run never would -- locally there is always a warehouse
+      # left over from the last build.
+      - name: dbt build (models, data tests, unit tests)
         run: cd warehouse && dbt build --full-refresh
 
       - name: Source freshness

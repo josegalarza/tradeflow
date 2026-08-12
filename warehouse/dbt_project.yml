@@ -50,9 +50,12 @@ vars:
   # 0.1% is chosen to sit above the zero a clean run produces and below the
   # ~0.15-0.35% that --inject-anomalies plants, so both paths are demonstrable.
   max_reject_rate: 0.001
-  # Days with fewer rows than this are excluded: one bad row out of three is a
-  # 33% reject rate and evidence of nothing.
-  min_rows_for_reject_rate: 500
+  # Samples smaller than this are excluded from the rate check: one bad row out of
+  # three is a 33% reject rate and evidence of nothing. Applies to both the
+  # per-day and the all-time scope, so it has to be low enough that the smallest
+  # preset still has a measurable all-time rate -- 500 was too high, and the gate
+  # silently passed a `--scale tiny` build of deliberately corrupted data.
+  min_rows_for_reject_rate: 100
 
   # Rows sampled by the position reconciliation test. Its correlated subquery is
   # O(snapshots x fills), so the exhaustive form outlasts the build it checks at

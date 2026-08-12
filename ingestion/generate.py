@@ -1667,8 +1667,24 @@ def parse_args(argv: list[str] | None = None) -> Config:
     parser.add_argument(
         "--end-date",
         type=lambda s: date.fromisoformat(s),
-        default=date.today(),
-        help="Last day of generated history (ISO format).",
+        # Yesterday in UTC. Two things are load-bearing here, and both were bugs.
+        #
+        # *Yesterday, not today.* A nightly batch lands the previous day's data,
+        # which is the realistic shape -- and ending today produces order timestamps
+        # later than the wall clock, because intraday times are drawn across a whole
+        # session regardless of the hour it currently is. `int_orders_screened`
+        # then correctly quarantines them as `placed_in_future`, their executions
+        # cascade to `orphan_order`, and a clean run fails its own quality gate.
+        #
+        # *UTC, not local.* The warehouse runs its session in UTC and compares
+        # against CURRENT_TIMESTAMP, so a local `date.today()` is a day ahead for
+        # anyone east of Greenwich. Crypto draws intraday times across a full 24
+        # hours, so those orders landed in the future even after the first fix.
+        # Ending on UTC yesterday means every timestamp is provably in the past,
+        # whatever timezone the machine is in -- and it stays deterministic, which
+        # clamping to "now" would not.
+        default=datetime.now(UTC).date() - timedelta(days=1),
+        help="Last day of generated history (ISO format). Defaults to yesterday.",
     )
     parser.add_argument(
         "--out",

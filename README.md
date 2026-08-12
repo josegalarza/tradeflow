@@ -11,9 +11,10 @@ make install
 make demo
 ```
 
-Three minutes later you have a 26-model warehouse built from 430,000 synthetic
-rows, 300+ passing data quality checks, four masked role views, and a generated
-data catalog. No cloud account, no credentials, no bill.
+Two minutes later you have a warehouse of 26 hand-written models plus 40
+generated role views, built from 430,000 synthetic rows, with 267 data tests and
+5 unit tests passing, and a generated data catalog. No cloud account, no
+credentials, no bill.
 
 > **The data is synthetic.** Instrument symbols, names, sectors, exchanges and
 > listing currencies are real-world reference data. Every price is a simulated
@@ -151,11 +152,13 @@ make demo-anomalies    # plants duplicate fills, orphan FKs, negative
 The result is the interesting part:
 
 ```
-4 detector WARNINGS   ·   1 gate ERROR   ·   0 models skipped
+4 detector WARNINGS   ·   1 gate ERROR   ·   all 11 marts built
 ```
 
-Every mart still built. The quarantine absorbed 670 defective rows across six
-reason codes, and `marts.agg_data_quality` records what and why.
+The quarantine absorbed the defective rows across six reason codes, and
+`marts.agg_data_quality` records what and why. The only models that do not build
+are the four role views over `agg_data_quality` itself — they sit downstream of
+the gate that failed, which is dbt doing exactly the right thing.
 
 That split is deliberate. A staging test at error severity halts every downstream
 model — so when the defect is one the quarantine is built to absorb, the dashboard
@@ -204,7 +207,8 @@ interval it stayed valid for, and only those intervals expand to daily rows:
 And `dim_customer` is Type 2 built from periodic extracts rather than
 `dbt snapshot`, because snapshots can only accumulate history over real elapsed
 time — meaning the SCD2 story would be invisible on a fresh clone and untestable in
-CI. Five dbt unit tests cover the boundary logic without touching the warehouse.
+CI. Five dbt unit tests cover the boundary logic against fixed fixtures rather
+than against whatever the data happens to contain.
 → [ADR 0004](docs/adr/0004-scd2-from-extracts-not-snapshots.md)
 
 ### 4. A generator that makes the rest demonstrable
@@ -254,7 +258,7 @@ make dagster           # orchestration UI           :3000
 make docs              # dbt lineage and docs       :8080
 
 make build             # dbt build (models + tests)
-make unit-test         # dbt unit tests -- no warehouse needed
+make unit-test         # dbt unit tests (after a build; they read no data)
 make governance        # gates, regenerate secure views + catalog
 make lint              # ruff + sqlfluff
 make pytest            # 54 Python tests
