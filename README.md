@@ -271,7 +271,7 @@ make pytest            # 54 Python tests
 make ci                # everything CI runs, locally
 
 make generate SCALE=large   # 67M rows
-make up                     # docker compose: build + dash + dagster
+make up                     # docker compose: build + dash + dagster (UNVERIFIED -- see limitations)
 ```
 
 ---
@@ -331,6 +331,13 @@ straight with you:
   forecast.
 - **Charts commit to a single light surface.** A half-implemented dark mode that
   leaves the plot area light is worse than an honest one.
+- **The container path is written but not yet verified end to end.** The
+  `Dockerfile`, entrypoint and compose file are complete, and `.dockerignore`
+  brings the build context down from 1.1 GB to 0.9 MB — but the machine this was
+  built on could not complete a `docker pull` of the base image (the daemon
+  stalls; the registry itself answers fine over HTTPS), so `make up` has never
+  been observed to come up. Everything else in this README was run and checked.
+  Treat the Docker path as untested until it has a green run behind it.
 
 ---
 

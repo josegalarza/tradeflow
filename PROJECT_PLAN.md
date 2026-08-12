@@ -286,7 +286,7 @@ Each phase ends with a green CI, an accurate README, and a git tag.
 | **v0.3 Governance** | Classification tags across all layers, masking macros, secure view generation, CI coverage gate, generated catalog | Untagged column fails CI; four role schemas materialise |
 | **v0.4 Orchestration** | Dagster assets, partitions, asset checks, schedule, sensor, Slack hooks | Backfill demonstrated; alert fires on injected anomaly |
 | **v0.5 Visualization** | Dash multi-page app (overview, customers, instruments, data quality, catalog), static export to Pages | Pages site shows live charts to a non-cloner |
-| **v0.6 Ops polish** | Dockerfile, compose, GHCR release workflow, dbt Slim CI via stored manifest, ADRs, README screenshots/GIF | `docker compose up` brings up the full stack |
+| **v0.6 Ops polish** | Dockerfile, compose, GHCR release workflow, dbt Slim CI via stored manifest, ADRs, README screenshots/GIF | `docker compose up` brings up the full stack — files written in v0.1, but NOT yet verified (see README limitations) |
 
 Anything in §9 is explicitly *out* until v0.6 ships.
 
