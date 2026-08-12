@@ -4,9 +4,15 @@
 > dbt + DuckDB + Dagster + Dash, with dimensional modeling, a tag-driven data
 > classification & masking framework, data quality tests, CI/CD and Slack alerting.
 
-**Status:** planning + v0.1 scaffold
+**Status:** shipped — see "What actually shipped" in §8
 **Owner:** josegalarza
 **Repo:** `github.com/josegalarza/tradeflow`
+
+> This document was written *before* the build, as a plan. It has been left
+> largely as drafted, including the places where the build went differently,
+> because the gap between the two is the interesting part. §8 records what
+> actually landed and what was deliberately dropped; `docs/adr/` explains why.
+> Where this file and the README disagree, the README is current.
 
 ---
 
@@ -289,6 +295,41 @@ Each phase ends with a green CI, an accurate README, and a git tag.
 | **v0.6 Ops polish** | Dockerfile, compose, GHCR release workflow, dbt Slim CI via stored manifest, ADRs, README screenshots/GIF | `docker compose up` brings up the full stack — files written in v0.1, but NOT yet verified (see README limitations) |
 
 Anything in §9 is explicitly *out* until v0.6 ships.
+
+### What actually shipped
+
+The first build went further than v0.1 and stopped short in two specific places.
+
+**Landed:** the generator with all four scale presets and anomaly injection; the
+full four-layer warehouse (9 staging, 6 intermediate, 11 marts, 40 generated
+secure views); SCD2 from extracts; all four fact grains; 267 data tests and 5
+unit tests; the complete governance framework with its CI gate, generated role
+views and generated catalog; Dagster with 78 assets and 244 asset checks; Slack
+notifications; the Dash app and the static export published to Pages; CI
+including a job that proves the quality gate fires on corrupted data; six ADRs.
+
+**Deliberately dropped, with reasons in the ADRs:**
+
+- *Daily partitions and backfill in Dagster* (ADR 0006). The generator rewrites
+  its whole window, so partitions would be a UI affordance over an asset that
+  cannot materialise a single day. Faking it would look better and behave worse.
+- *Weighted-average cost basis* (ADR 0005). Inherently sequential; the column is
+  named `net_invested_reporting` for what it actually is instead.
+- *Full-history daily position snapshots* (ADR 0005). A trailing window plus an
+  incremental build, because the naive grain is a billion mostly-empty rows.
+- *Dark mode for the charts.* A half-implemented one that leaves the plot area
+  light is worse than an honest single surface.
+- *Docker verification.* The files are written; the build could not be completed
+  on the machine this was developed on. Flagged in the README rather than
+  assumed.
+
+**Changed from the plan:** §4 above says intermediate models are "ephemeral or
+views" — they are all views, because ephemeral models cannot be queried when a
+number looks wrong and get recomputed once per reference. §3 lists a `customers`
+source; it became `customer_extracts` (one row per customer per extract date)
+for the reasons in ADR 0004. §5 promised model contracts on all of `30_marts`;
+that became grain tests plus relationship tests, since contracts on aggregate
+models mostly assert DECIMAL precision that `SUM` decides.
 
 ---
 
