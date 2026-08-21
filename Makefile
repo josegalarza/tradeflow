@@ -93,8 +93,18 @@ install-core: ## Install only what `make build` needs (used by CI)
 # The demo
 # ---------------------------------------------------------------------------- #
 
+# `rebuild`, not `build`: `generate` wipes the landing zone and regenerates the
+# whole history against a new end date (UTC yesterday), so every fill gets a new
+# date on every run. `fct_positions_daily` is incremental and upserts by
+# (account, instrument, snapshot_date) over a short lookback -- a contract that
+# assumes the source is append-only. Re-running `make demo` a day or more after
+# the last build therefore left months of snapshot rows computed from the
+# *previous* dataset, and `assert_positions_reconcile_to_executions` correctly
+# failed on them. Incremental state is only valid across runs that share a
+# landing zone, which `generate` never does. `make build` keeps the plain
+# incremental path for exactly that case.
 .PHONY: demo
-demo: generate build governance ## Clean clone -> populated warehouse (start here)
+demo: generate rebuild governance ## Clean clone -> populated warehouse (start here)
 	@echo
 	@echo "warehouse built at $(TRADEFLOW_DUCKDB)"
 	@echo "  make dash     -- interactive dashboard on http://localhost:8050"
@@ -120,8 +130,10 @@ demo-anomalies: ## Same, with defects planted -- the quality tests should fire
 generate: ## Generate the synthetic landing zone (SCALE=small)
 	$(PYTHON) -m ingestion.generate --scale $(SCALE) --seed $(SEED)
 
+# Keeps incremental state. Correct for repeated builds over one landing zone;
+# after a fresh `make generate` use `rebuild` instead -- see the note on `demo`.
 .PHONY: build
-build: ## Run dbt build (models + tests)
+build: ## Run dbt build (models + tests, keeping incremental state)
 	cd $(WAREHOUSE) && ../$(DBT) build $(DBT_SELECT)
 
 .PHONY: rebuild

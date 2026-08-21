@@ -79,3 +79,12 @@ outcome: the number would be used.
   can raise it.
 - `positions_snapshot_days` couples two facts. Changing it changes the span of the
   equity curve as well as the position snapshot.
+- Accumulating across runs is only valid while the landing zone is stable. The
+  incremental build upserts by `(account, instrument, snapshot_date)` over a
+  short lookback, which assumes the source is append-only. `ingestion.generate`
+  is not: it wipes the landing zone and regenerates the whole history against a
+  new end date, so re-running it a day later gives every fill a new date and
+  leaves the snapshot rows outside the lookback describing a dataset that no
+  longer exists. `assert_positions_reconcile_to_executions` catches this, which
+  is the test doing its job. `make demo` therefore full-refreshes, and the plain
+  incremental path (`make build`) is for repeated builds over one landing zone.
